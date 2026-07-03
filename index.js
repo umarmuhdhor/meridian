@@ -3,13 +3,13 @@ import cron from "node-cron";
 import readline from "readline";
 import path from "path";
 import { fileURLToPath } from "url";
-import { agentLoop } from "./agent.js";
+import { agentLoop } from "./agent/agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates, degenScore } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
-import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
+import { evolveThresholds, getPerformanceSummary } from "./persistence/lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import {
   startPolling,
@@ -23,17 +23,17 @@ import {
   notifyOutOfRange,
   isEnabled as telegramEnabled,
   createLiveMessage,
-} from "./telegram.js";
-import { generateBriefing } from "./briefing.js";
+} from "./integrations/telegram.js";
+import { generateBriefing } from "./integrations/briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state.js";
-import { getActiveStrategy } from "./strategy-library.js";
-import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
-import { checkSmartWalletsOnPool } from "./smart-wallets.js";
+import { getActiveStrategy } from "./persistence/strategy-library.js";
+import { recordPositionSnapshot, recallForPool, addPoolNote } from "./persistence/pool-memory.js";
+import { checkSmartWalletsOnPool } from "./persistence/smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
-import { stageSignals } from "./signal-tracker.js";
-import { getWeightsSummary } from "./signal-weights.js";
-import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
-import { appendDecision } from "./decision-log.js";
+import { stageSignals } from "./persistence/signal-tracker.js";
+import { getWeightsSummary } from "./persistence/signal-weights.js";
+import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./integrations/hivemind.js";
+import { appendDecision } from "./persistence/decision-log.js";
 
 import { REPO_ROOT, repoPath } from "./repo-root.js";
 
@@ -1724,6 +1724,21 @@ function computeBinsBelow(volatility) {
 
 // Register restarter — when update_config changes intervals, running cron jobs get replaced
 registerCronRestarter(() => { if (cronStarted) startCronJobs(); });
+
+// ── Dashboard bridge (env-gated; the ONLY dashboard touch-point in core) ──
+// Without DASHBOARD_ENABLED=true, the bridge file is never even imported, so
+// daemon behavior is byte-for-byte identical. Placed inside if(isMain) BEFORE
+// the TTY/non-TTY split so the bridge is available in both REPL and daemon mode.
+// Bridge startup failure MUST NOT stop the daemon (catch + warn). Socket closes
+// on process exit, so wiring into shutdown() is optional and intentionally skipped.
+if (isMain && process.env.DASHBOARD_ENABLED === "true") {
+  import("./dashboard/bridge/server.js")
+    .then(({ startBridge }) => startBridge({
+      port: Number(process.env.DASHBOARD_PORT ?? 8787),
+      token: process.env.DASHBOARD_TOKEN,
+    }))
+    .catch((e) => log("dashboard_warn", `Bridge failed to start: ${e.message}`));
+}
 
 if (isMain && isTTY) {
   const rl = readline.createInterface({

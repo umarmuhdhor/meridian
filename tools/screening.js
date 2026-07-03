@@ -1,8 +1,8 @@
 import { config } from "../config.js";
-import { isBlacklisted } from "../token-blacklist.js";
-import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
+import { isBlacklisted } from "../persistence/token-blacklist.js";
+import { isDevBlocked, getBlockedDevs } from "../persistence/dev-blocklist.js";
 import { log } from "../logger.js";
-import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+import { isBaseMintOnCooldown, isPoolOnCooldown } from "../persistence/pool-memory.js";
 import { confirmIndicatorPreset } from "./chart-indicators.js";
 import { getAgentMeridianBase, getAgentMeridianHeaders } from "./agent-meridian.js";
 

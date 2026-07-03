@@ -23,12 +23,12 @@ import {
   minutesOutOfRange,
   syncOpenPositions,
 } from "../state.js";
-import { recordPerformance } from "../lessons.js";
-import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+import { recordPerformance } from "../persistence/lessons.js";
+import { isBaseMintOnCooldown, isPoolOnCooldown } from "../persistence/pool-memory.js";
 import { normalizeMint } from "./wallet.js";
-import { appendDecision } from "../decision-log.js";
+import { appendDecision } from "../persistence/decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
-import { getAndClearStagedSignals } from "../signal-tracker.js";
+import { getAndClearStagedSignals } from "../persistence/signal-tracker.js";
 import { computePositions, fetchDlmmPnlForPool } from "./pnl.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────

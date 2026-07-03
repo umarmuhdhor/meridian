@@ -626,50 +626,80 @@ Any OpenAI-compatible endpoint works.
 
 ## Architecture
 
+The repository is organized **by architectural layer**: the root holds the entry points and the cross-cutting *kernel* that almost every module depends on, while each subsystem lives in a labeled top-level folder alongside `tools/`.
+
 ```
-index.js            Main entry: REPL + cron orchestration + Telegram bot polling
-agent.js            ReAct loop: LLM → tool call → repeat
-config.js           Runtime config from user-config.json + .env (repo-root paths)
-repo-root.js        Stable absolute repo path — used by PM2, state files, and .env loading
-prompt.js           System prompt builder (SCREENER / MANAGER / GENERAL roles)
-state.js            Position registry (state.json)
-decision-log.js     Structured decision log for deploy, close, skip, and no-deploy rationale
-lessons.js          Learning engine: records performance, derives lessons, evolves thresholds
-pool-memory.js      Per-pool deploy history + snapshots
-strategy-library.js Saved LP strategies
-telegram.js         Telegram bot: polling + notifications
-hivemind.js         Agent Meridian HiveMind sync
-smart-wallets.js    KOL/alpha wallet tracker
-token-blacklist.js  Permanent token blacklist
-cli.js              Direct CLI — every tool as a subcommand with JSON output
-
-tools/
-  definitions.js    Tool schemas (OpenAI format)
-  executor.js       Tool dispatch + safety checks
-  dlmm.js           Meteora DLMM SDK wrapper
-  screening.js      Pool discovery
-  wallet.js         SOL/token balances + Jupiter swap
-  token.js          Token info, holders, narrative
-  study.js          Top LPer study via LPAgent API
-
-discord-listener/
-  index.js          Selfbot Discord listener
-  pre-checks.js     Signal pre-check pipeline
-
-.claude/
-  agents/
-    screener.md     Claude Code screener sub-agent
-    manager.md      Claude Code manager sub-agent
-  commands/
-    screen.md       /screen slash command
-    manage.md       /manage slash command
-    balance.md      /balance slash command
-    positions.md    /positions slash command
-    candidates.md   /candidates slash command
-    study-pool.md   /study-pool slash command
-    pool-ohlcv.md   /pool-ohlcv slash command
-    pool-compare.md /pool-compare slash command
+meridian/
+├── index.js              Entry: daemon — REPL + cron + Telegram bot + PnL poller
+├── cli.js                Entry: one-shot CLI (every tool as a subcommand)
+├── setup.js              Entry: interactive first-run wizard
+├── repo-root.js          Kernel: stable absolute repo path (state files, PM2, .env)
+├── config.js             Kernel: runtime config from user-config.json + .env
+├── screening-scales.js   Kernel: timeframe → screening-threshold scaling
+├── logger.js             Kernel: rotating file logger + JSONL action audit
+├── state.js              Kernel: live position registry (state.json)
+├── envcrypt.js           Kernel: .env loading + optional XOR encryption
+│
+├── agent/                The LLM "brain"
+│   ├── agent.js          ReAct loop: LLM → tool call → repeat
+│   └── prompt.js         System-prompt builder (SCREENER / MANAGER / GENERAL)
+│
+├── persistence/          JSON-backed state stores + signal trackers
+│   ├── lessons.js        Learning engine: performance → lessons → threshold evolution
+│   ├── pool-memory.js    Per-pool deploy history + rolling snapshots
+│   ├── decision-log.js   Structured deploy / close / skip / no-deploy rationale
+│   ├── signal-tracker.js In-memory staging of screening-time signals
+│   ├── signal-weights.js Darwinian signal weighting
+│   ├── strategy-library.js  Saved LP strategies
+│   ├── smart-wallets.js  KOL / alpha wallet tracker
+│   ├── token-blacklist.js   Permanent token blacklist
+│   └── dev-blocklist.js  Deployer-wallet blocklist
+│
+├── integrations/         External I/O surfaces
+│   ├── telegram.js       Telegram bot: polling + notifications
+│   ├── hivemind.js       Agent Meridian HiveMind sync
+│   └── briefing.js       Daily HTML briefing report
+│
+├── tools/                Tool layer (LLM-callable)
+│   ├── definitions.js    Tool schemas (OpenAI format)
+│   ├── executor.js       Tool dispatch + safety checks
+│   ├── dlmm.js           Meteora DLMM SDK wrapper
+│   ├── screening.js      Pool discovery + scoring
+│   ├── wallet.js         SOL / token balances + Jupiter swap
+│   ├── token.js          Token info, holders, narrative
+│   ├── pnl.js            Position PnL computation
+│   ├── chart-indicators.js  Technical-indicator confirmation
+│   ├── agent-meridian.js Agent Meridian API client
+│   ├── gmgn.js           GMGN fee-source client
+│   └── study.js          Top-LPer study via LPAgent API
+│
+├── discord-listener/     Standalone selfbot (own package.json)
+│   ├── index.js          Discord listener
+│   └── pre-checks.js     Signal pre-check pipeline
+│
+├── scripts/              Dev / ops scripts (postinstall anchor patch, env encrypt)
+├── test/                 Syntax-checked smoke tests
+├── utils/                Tiny shared helpers (safeNumber)
+├── .claude/              Claude Code sub-agents + slash commands
+└── dashboard/            Control dashboard — separate sub-project (see note below)
 ```
+
+**Where things live**
+
+| Location | Purpose |
+|---|---|
+| *(root)* | Entry points (`index.js`, `cli.js`, `setup.js`) plus the cross-cutting **kernel** — path resolution, config, logging, live position state, and env bootstrap — that nearly every other module imports. Kept flat so these stable, high-fan-in modules have short, unchanging import paths. |
+| `agent/` | The LLM control loop and prompt construction. |
+| `persistence/` | Every module that owns a JSON store at the repo root (plus the in-memory signal trackers) — the agent's memory, history, and learned state. |
+| `integrations/` | Outbound / external surfaces: Telegram, HiveMind sync, and the daily briefing. |
+| `tools/` | The tool layer the LLM can call — SDK wrappers, screening, wallet/swap, and third-party API clients. |
+| `discord-listener/` | A standalone selfbot process with its own `package.json`; shares the parent `.env`. |
+| `scripts/`, `test/`, `utils/` | Dev/ops scripts, smoke tests, and small shared helpers. |
+| `.claude/` | Claude Code sub-agent definitions and slash commands. |
+
+Runtime state, config, and log files (`state.json`, `lessons.json`, `pool-memory.json`, `user-config.json`, `logs/`, …) are always written to the **repo root**, resolved via `repo-root.js` — independent of where the source module that writes them now lives.
+
+> **`dashboard/` is a separate sub-project and is intentionally excluded from this layout.** It has its own internal structure and is not part of the agent runtime documented above. It does consume a few root modules (`state.js`, `logger.js`, and `tools/*`) through relative imports — which is exactly why those files remain pinned at the repository root.
 
 ---
 
