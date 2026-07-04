@@ -67,9 +67,13 @@ const INTENT_PATTERNS = [
   { intent: "lessons",     re: /\b(lesson|learned|teach|pin|unpin|clear lesson|what did you learn)\b/i },
 ];
 
-function getToolsForRole(agentType, goal = "") {
-  if (agentType === "MANAGER")  return tools.filter(t => MANAGER_TOOLS.has(t.function.name));
-  if (agentType === "SCREENER") return tools.filter(t => SCREENER_TOOLS.has(t.function.name));
+function getToolsForRole(agentType, goal = "", allowedTools = null) {
+  // allowedTools (optional Set of tool names) intersects the role's tool set — used by
+  // the dashboard chat to force a read-only surface. null → unchanged legacy behavior.
+  const clamp = (list) => (allowedTools ? list.filter(t => allowedTools.has(t.function.name)) : list);
+
+  if (agentType === "MANAGER")  return clamp(tools.filter(t => MANAGER_TOOLS.has(t.function.name)));
+  if (agentType === "SCREENER") return clamp(tools.filter(t => SCREENER_TOOLS.has(t.function.name)));
 
   // GENERAL: match intent from goal, combine matched tool sets
   const matched = new Set();
@@ -80,8 +84,8 @@ function getToolsForRole(agentType, goal = "") {
   }
 
   // Fall back to all tools if no intent matched
-  if (matched.size === 0) return tools.filter(t => !GENERAL_INTENT_ONLY_TOOLS.has(t.function.name));
-  return tools.filter(t => matched.has(t.function.name));
+  if (matched.size === 0) return clamp(tools.filter(t => !GENERAL_INTENT_ONLY_TOOLS.has(t.function.name)));
+  return clamp(tools.filter(t => matched.has(t.function.name)));
 }
 import { getWalletBalances } from "../tools/wallet.js";
 import { getMyPositions } from "../tools/dlmm.js";
@@ -155,7 +159,7 @@ function isThinkingModeToolChoiceError(error) {
  * @returns {string} - The agent's final text response
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
-  const { interactive = false, onToolStart = null, onToolFinish = null } = options;
+  const { interactive = false, onToolStart = null, onToolFinish = null, allowedTools = null } = options;
   // Build dynamic system prompt with current portfolio state
   const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
   const stateSummary = getStateSummary();
@@ -207,7 +211,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           const reqParams = {
             model: usedModel,
             messages,
-            tools: getToolsForRole(agentType, goal),
+            tools: getToolsForRole(agentType, goal, allowedTools),
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           };

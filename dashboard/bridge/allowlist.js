@@ -10,6 +10,18 @@ export const READ_TOOLS = new Set([
   "list_smart_wallets", "list_blacklist", "list_blocked_deployers", "check_smart_wallets_on_pool",
 ]);
 
+// Read-only surface for the dashboard chat (M5, Fase A). Passed to agentLoop as
+// `allowedTools` so the LLM literally cannot pick a write tool. Superset of READ_TOOLS
+// plus the GENERAL read/enrichment tools. MUST NOT contain any write tool.
+export const CHAT_READ_TOOLS = new Set([
+  ...READ_TOOLS,
+  "get_recent_decisions", "get_performance_history", "list_lessons", "list_strategies",
+  "list_smart_wallets", "list_blacklist", "list_blocked_deployers",
+  "get_pool_memory", "get_pool_detail", "search_pools", "discover_pools",
+  "get_token_info", "get_token_holders", "get_token_narrative",
+  "study_top_lpers", "get_top_lpers",
+]);
+
 export const WRITE_TOOLS_DASHBOARD = new Set([
   "deploy_position", "close_position", "claim_fees", "swap_token", "set_position_note",
   "add_lesson", "pin_lesson", "unpin_lesson", "clear_lessons", "add_strategy", "remove_strategy",

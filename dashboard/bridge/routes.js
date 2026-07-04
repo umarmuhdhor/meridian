@@ -19,7 +19,9 @@ import { getMyPositions } from "../../tools/dlmm.js";
 import { getStateSummary } from "../../state.js";
 import { getWalletBalances } from "../../tools/wallet.js";
 import { log } from "../../logger.js";
-import { isAllowedTool, isWriteTool, resolveFile } from "./allowlist.js";
+import { agentLoop } from "../../agent/agent.js"; // non-SDK — lazy-load of @meteora-ag/dlmm stays intact (F7/#8)
+import { config } from "../../config.js";
+import { isAllowedTool, isWriteTool, resolveFile, CHAT_READ_TOOLS } from "./allowlist.js";
 import { acquire, release } from "./inflight.js";
 import { redactSecrets } from "./redact.js";
 import { sseSubscribe, sseUnsubscribe } from "./sse.js";
@@ -29,6 +31,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const json = (res, code, body) => {
   res.writeHead(code, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
+};
+
+// Strip model <think> blocks before surfacing to the UI (mirrors index.js stripThink).
+const stripThink = (t = "") => String(t).replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+// Write one SSE frame; swallow errors if the socket already closed.
+const sseFrame = (res, event, data) => {
+  try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* closed */ }
 };
 
 // rate-limit ?force=1 on positions: at most 1× / 10s (F5)
@@ -126,6 +135,59 @@ export async function handleRequest(req, res, startedAt) {
     } finally {
       if (write) release(name);
     }
+  }
+
+  // ── POST /chat (streaming; read-only agentLoop GENERAL — M5 Fase A) ──
+  // Body: { message: string, history?: [{role,content}] }. Streams SSE frames:
+  //   event: tool  data: {phase:"start"|"finish", name, success?}
+  //   event: done  data: {content}   |   event: error data: {message}
+  // Read-only by construction: agentLoop only sees CHAT_READ_TOOLS, so the LLM
+  // cannot pick a write tool. Writes stay on the confirm-gated /tool path (M2).
+  if (req.method === "POST" && p === "/chat") {
+    let body;
+    try { body = await readBody(req); } catch { return json(res, 400, { error: "invalid json" }); }
+    const message = typeof body?.message === "string" ? body.message.trim() : "";
+    if (!message) return json(res, 400, { error: "missing message" });
+    const history = Array.isArray(body?.history)
+      ? body.history
+          .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+          .slice(-10)
+      : [];
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.write(": connected\n\n");
+    let closed = false;
+    const hb = setInterval(() => { try { res.write(": ping\n\n"); } catch { /* closed */ } }, 20_000);
+    req.on("close", () => { closed = true; clearInterval(hb); });
+
+    try {
+      log("dashboard", "chat"); // one line only; executeTool inside agentLoop does the audit (F1)
+      const { content } = await agentLoop(
+        message,
+        config.llm.maxSteps,
+        history,
+        "GENERAL",
+        config.llm.generalModel,
+        null,
+        {
+          allowedTools: CHAT_READ_TOOLS, // read-only surface (Fase A)
+          onToolStart:  ({ name })          => { if (!closed) sseFrame(res, "tool", { phase: "start",  name }); },
+          onToolFinish: ({ name, success }) => { if (!closed) sseFrame(res, "tool", { phase: "finish", name, success }); },
+        },
+      );
+      sseFrame(res, "done", { content: stripThink(content) });
+    } catch (e) {
+      sseFrame(res, "error", { message: e?.message || "chat failed" });
+    } finally {
+      clearInterval(hb);
+      try { res.end(); } catch { /* already closed */ }
+    }
+    return; // stream ended — do NOT json()/end again
   }
 
   return json(res, 404, { error: "not found" });

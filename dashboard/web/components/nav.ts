@@ -1,5 +1,6 @@
 import {
   SquaresFour,
+  ChatCircle,
   ChartLineUp,
   GraduationCap,
   GitBranch,
@@ -22,6 +23,7 @@ export interface NavItem {
 // Config/Blocklist are M2; Wallet/Screen are M3; Learning/Logs are M4.
 export const NAV: NavItem[] = [
   { href: "/", label: "Overview", icon: SquaresFour },
+  { href: "/chat", label: "Chat", icon: ChatCircle },
   { href: "/positions", label: "Positions", icon: ChartLineUp },
   { href: "/feed", label: "Feed", icon: GraduationCap },
   { href: "/decisions", label: "Decisions", icon: GitBranch },
