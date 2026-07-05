@@ -64,6 +64,8 @@ import { createIntervalScheduler } from "../adapters/scheduler/interval.js";
 import { runScreeningCycle } from "../app/screening/cycle.js";
 import { runManagementCycle } from "../app/management/cycle.js";
 import { createPnlPoller } from "../app/management/pnl-poller.js";
+import { runBriefingCycle } from "../app/briefing/cycle.js";
+import { runHealthCycle } from "../app/health/cycle.js";
 
 const REPO_ROOT = process.cwd();
 const STATE_DIR = process.env.MERIDIAN_STATE_DIR
@@ -376,6 +378,32 @@ async function main(): Promise<void> {
       config: ctx.config.management,
     });
     console.log("  pnl-poller: 30s trailing-TP + 15s two-phase confirm");
+
+    const healthMs = ctx.config.schedule.healthCheckIntervalMin * 60_000;
+    scheduler.every(
+      healthMs,
+      () =>
+        runHealthCycle({ ctx, llm, registry, model }).then(() => {}).catch((err: unknown) => {
+          ctx.logger.warn("health", "cycle failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }),
+      "health",
+    );
+    console.log(`  health-check: every ${healthMs / 1000}s`);
+
+    const briefingIntervalMs = 24 * 3_600_000;
+    scheduler.every(
+      briefingIntervalMs,
+      () =>
+        runBriefingCycle({ ctx }).then(() => {}).catch((err: unknown) => {
+          ctx.logger.warn("briefing", "cycle failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }),
+      "briefing",
+    );
+    console.log("  briefing: every 24h");
     const shutdown = (sig: string) => {
       console.log(`\n${sig} — shutting down scheduler`);
       pollerHandle.stop();
