@@ -1,0 +1,31 @@
+import type {
+  ActiveBin,
+  ClaimResult,
+  CloseResult,
+  DeployArgs,
+  DeployResult,
+  PositionsSnapshot,
+  WalletBalance,
+} from "../domain/schemas/chain.js";
+
+export interface GetPositionsOptions {
+  /** Bypass the cache — used by deploy safety check for a fresh count. */
+  force?: boolean;
+  /** Suppress per-position logs when true — used by cron/shutdown paths. */
+  silent?: boolean;
+  wallet_address?: string;
+}
+
+/**
+ * The on-chain surface. Every write path returns a discriminated result with a `success`
+ * flag rather than throwing — the ReAct loop needs the failure signal in-band. Read paths
+ * throw only on unrecoverable RPC errors (network dead, key missing).
+ */
+export interface ChainClient {
+  getWalletBalance(walletAddress?: string): Promise<WalletBalance>;
+  getActiveBin(poolAddress: string): Promise<ActiveBin>;
+  getMyPositions(opts?: GetPositionsOptions): Promise<PositionsSnapshot>;
+  deployPosition(args: DeployArgs): Promise<DeployResult>;
+  closePosition(positionAddress: string, reason: string): Promise<CloseResult>;
+  claimFees(positionAddress: string): Promise<ClaimResult>;
+}

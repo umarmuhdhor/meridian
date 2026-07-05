@@ -47,3 +47,10 @@ discord-signals.json
 
 # Claude Code runtime lock
 .claude/scheduled_tasks.lock
+
+# TypeScript build output
+dist/
+
+# Vitest coverage
+coverage/
+
