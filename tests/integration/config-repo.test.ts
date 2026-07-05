@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createJsonConfigRepo } from "../../src/adapters/persistence/json/config-repo.js";
 import { flatToNested, nestedToFlat, parseAppConfig } from "../../src/domain/config-load.js";
+import { FlatUserConfigSchema } from "../../src/domain/schemas/config-flat.js";
 import { mkTmpDir, rmDir } from "./tmpdir.js";
 
 const created: string[] = [];
@@ -57,7 +58,8 @@ const flatFixture = {
 
 describe("flatToNested / nestedToFlat", () => {
   it("nests flat correctly", () => {
-    const nested = flatToNested(flatFixture);
+    const flat = FlatUserConfigSchema.parse(flatFixture);
+    const nested = flatToNested(flat);
     expect(nested.risk.maxPositions).toBe(3);
     expect(nested.management.stopLossPct).toBe(-50);
     expect(nested.strategy.strategy).toBe("bid_ask");
@@ -65,10 +67,26 @@ describe("flatToNested / nestedToFlat", () => {
   });
 
   it("round-trips: nested → flat → nested equal on known keys", () => {
-    const nested1 = flatToNested(flatFixture);
+    const flat = FlatUserConfigSchema.parse(flatFixture);
+    const nested1 = flatToNested(flat);
     const backFlat = nestedToFlat(nested1);
-    const nested2 = flatToNested({ ...flatFixture, ...backFlat });
+    const merged = FlatUserConfigSchema.parse({ ...flatFixture, ...backFlat });
+    const nested2 = flatToNested(merged);
     expect(nested2).toEqual(nested1);
+  });
+
+  it("defaults new sections when flat file omits them", () => {
+    const r = parseAppConfig(flatFixture);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.screening.minTvl).toBe(10_000);
+    expect(r.value.llm.maxTokens).toBe(4096);
+    expect(r.value.darwin.enabled).toBe(true);
+    expect(r.value.hiveMind.pullMode).toBe("auto");
+    expect(r.value.jupiter.referralFeeBps).toBe(50);
+    expect(r.value.indicators.enabled).toBe(false);
+    expect(r.value.tokens.SOL).toBe("So11111111111111111111111111111111111111112");
+    expect(r.value.pnl.source).toBe("rpc");
   });
 });
 

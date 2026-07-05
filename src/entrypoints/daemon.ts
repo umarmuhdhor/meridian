@@ -22,10 +22,16 @@ import type { SwapClient } from "../ports/swap-client.js";
 import { createOpenRouterLLMClient } from "../adapters/llm/openrouter.js";
 import { createFakeLLM } from "../adapters/llm/fake.js";
 import { createCollectingNotifier } from "../adapters/notify/collecting-notifier.js";
+import { createTelegramNotifier } from "../adapters/notify/telegram.js";
+import type { Notifier } from "../ports/notifier.js";
 import { createFakePoolDiscovery } from "../adapters/market/fake-pool-discovery.js";
 import { createFakeTokenInfo } from "../adapters/market/fake-token-info.js";
 import { createFakeRugCheck } from "../adapters/market/fake-rug-check.js";
 import { createFakeSmartWalletChecker } from "../adapters/market/fake-smart-wallet-checker.js";
+import { createMeteoraPoolDiscovery } from "../adapters/market/meteora-pool-discovery.js";
+import { createJupiterTokenInfo } from "../adapters/market/jupiter-token-info.js";
+import type { PoolDiscoveryClient } from "../ports/pool-discovery.js";
+import type { TokenInfoClient } from "../ports/token-info-client.js";
 import { createRegistry } from "../app/tools/registry.js";
 import { getPoolMemoryTool } from "../app/tools/impls/get-pool-memory.js";
 import { assertPoolDeployableTool } from "../app/tools/impls/assert-pool-deployable.js";
@@ -160,19 +166,21 @@ async function boot(): Promise<BootResult> {
       clock,
       logger,
       pnl,
-      solMode: false,
+      solMode: cfg.value.management.solMode,
+      pnlMaxDiffPct: cfg.value.management.pnlSanityMaxDiffPct,
     });
+    const referralAccount =
+      process.env.JUPITER_REFERRAL_ACCOUNT ?? cfg.value.jupiter.referralAccount;
+    const referralFeeBps = process.env.JUPITER_REFERRAL_FEE_BPS
+      ? Number(process.env.JUPITER_REFERRAL_FEE_BPS)
+      : cfg.value.jupiter.referralFeeBps;
     swap = createJupiterSwapClient({
       clock,
       logger,
       wallet,
       connection,
-      ...(process.env.JUPITER_REFERRAL_ACCOUNT
-        ? { referralAccount: process.env.JUPITER_REFERRAL_ACCOUNT }
-        : {}),
-      ...(process.env.JUPITER_REFERRAL_FEE_BPS
-        ? { referralFeeBps: Number(process.env.JUPITER_REFERRAL_FEE_BPS) }
-        : {}),
+      ...(referralAccount ? { referralAccount } : {}),
+      ...(referralFeeBps ? { referralFeeBps } : {}),
     });
     logger.info("boot", `chain: meteora (wallet=${wallet.address.slice(0, 8)}...)`);
   } else {
@@ -192,36 +200,62 @@ async function boot(): Promise<BootResult> {
     };
     logger.info("boot", "chain: dryrun");
   }
-  const notifier = createCollectingNotifier();
+  const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+  const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+  const notifier: Notifier =
+    telegramToken && telegramChatId
+      ? createTelegramNotifier({ botToken: telegramToken, chatId: telegramChatId, logger })
+      : createCollectingNotifier();
+  logger.info("boot", `notifier: ${telegramToken && telegramChatId ? "telegram" : "collecting"}`);
 
+  const marketMode = (
+    process.env.MERIDIAN_MARKET ?? (chainMode === "meteora" ? "real" : "fake")
+  ).toLowerCase();
+  if (marketMode !== "real" && marketMode !== "fake") {
+    throw new Error(`MERIDIAN_MARKET unknown: ${marketMode} (expected "real" or "fake")`);
+  }
+  const nowFn = (): Date => clock.now();
+  const pools: PoolDiscoveryClient =
+    marketMode === "real"
+      ? createMeteoraPoolDiscovery({
+          logger,
+          screening: cfg.value.screening,
+          now: nowFn,
+        })
+      : createFakePoolDiscovery({
+          seed: [
+            {
+              pool_address: "DemoPool111111111111111111111111111111111111",
+              name: "DEMO/SOL",
+              base_mint: "DemoMint11111111111111111111111111111111111",
+              quote_mint: "So11111111111111111111111111111111111111112",
+              tvl: 50_000,
+              active_tvl: 40_000,
+              volume_window: 25_000,
+              fee_active_tvl_ratio: 0.12,
+              fee_tvl_ratio: 0.1,
+              organic_score: 75,
+              holders: 1200,
+              mcap: 400_000,
+              bin_step: 100,
+              volatility: 0.08,
+              launchpad: null,
+              token_age_hours: 48,
+              active_pct: 65,
+            },
+          ],
+        });
+  const tokenInfo: TokenInfoClient =
+    marketMode === "real"
+      ? createJupiterTokenInfo({ logger, now: nowFn })
+      : createFakeTokenInfo();
   const market = {
-    pools: createFakePoolDiscovery({
-      seed: [
-        {
-          pool_address: "DemoPool111111111111111111111111111111111111",
-          name: "DEMO/SOL",
-          base_mint: "DemoMint11111111111111111111111111111111111",
-          quote_mint: "So11111111111111111111111111111111111111112",
-          tvl: 50_000,
-          active_tvl: 40_000,
-          volume_window: 25_000,
-          fee_active_tvl_ratio: 0.12,
-          fee_tvl_ratio: 0.1,
-          organic_score: 75,
-          holders: 1200,
-          mcap: 400_000,
-          bin_step: 100,
-          volatility: 0.08,
-          launchpad: null,
-          token_age_hours: 48,
-          active_pct: 65,
-        },
-      ],
-    }),
-    tokenInfo: createFakeTokenInfo(),
+    pools,
+    tokenInfo,
     rugCheck: createFakeRugCheck(),
     smartWalletChecker: createFakeSmartWalletChecker(),
   };
+  logger.info("boot", `market: ${marketMode}`);
 
   const ctx: AppContext = {
     clock,
