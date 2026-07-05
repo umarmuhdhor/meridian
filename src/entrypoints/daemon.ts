@@ -66,6 +66,8 @@ import { runManagementCycle } from "../app/management/cycle.js";
 import { createPnlPoller } from "../app/management/pnl-poller.js";
 import { runBriefingCycle } from "../app/briefing/cycle.js";
 import { runHealthCycle } from "../app/health/cycle.js";
+import { createAgentMeridianHiveMind } from "../adapters/hivemind/agent-meridian.js";
+import { createHiveMindSync } from "../app/hivemind/sync.js";
 
 const REPO_ROOT = process.cwd();
 const STATE_DIR = process.env.MERIDIAN_STATE_DIR
@@ -404,9 +406,38 @@ async function main(): Promise<void> {
       "briefing",
     );
     console.log("  briefing: every 24h");
+
+    const hive = createAgentMeridianHiveMind({
+      logger: ctx.logger,
+      clock: ctx.clock,
+      enabled: !!ctx.config.hiveMind.agentId && ctx.config.hiveMind.pullMode !== "manual",
+      agentId: ctx.config.hiveMind.agentId,
+      ...(ctx.config.hiveMind.apiKey ? { apiKey: ctx.config.hiveMind.apiKey } : {}),
+      baseUrl: ctx.config.hiveMind.url,
+      version: "meridian-ts",
+      capabilities: () => ({
+        chain: process.env.MERIDIAN_CHAIN ?? "dryrun",
+        market: process.env.MERIDIAN_MARKET ?? "fake",
+        writes_armed: process.env.MERIDIAN_WRITE_UNSAFE === "true",
+        dry_run: process.env.DRY_RUN === "true",
+      }),
+    });
+    const hiveSync = createHiveMindSync({
+      clock: ctx.clock,
+      logger: ctx.logger,
+      scheduler,
+      client: hive,
+    });
+    if (hive.isEnabled()) {
+      console.log("  hivemind-sync: every 15m (agent-meridian)");
+    } else {
+      console.log("  hivemind-sync: disabled (no agentId or manual pull mode)");
+    }
+    const shutdownHive = hiveSync.stop;
     const shutdown = (sig: string) => {
       console.log(`\n${sig} — shutting down scheduler`);
       pollerHandle.stop();
+      shutdownHive();
       scheduler.cancelAll();
       process.exit(0);
     };
