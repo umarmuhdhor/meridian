@@ -30,8 +30,12 @@ import { createFakeRugCheck } from "../adapters/market/fake-rug-check.js";
 import { createFakeSmartWalletChecker } from "../adapters/market/fake-smart-wallet-checker.js";
 import { createMeteoraPoolDiscovery } from "../adapters/market/meteora-pool-discovery.js";
 import { createJupiterTokenInfo } from "../adapters/market/jupiter-token-info.js";
+import { createRugcheckAdapter } from "../adapters/market/rugcheck.js";
+import { createMeteoraSmartWalletChecker } from "../adapters/market/meteora-smart-wallet-checker.js";
 import type { PoolDiscoveryClient } from "../ports/pool-discovery.js";
 import type { TokenInfoClient } from "../ports/token-info-client.js";
+import type { RugCheckClient } from "../ports/rug-check.js";
+import type { SmartWalletChecker } from "../ports/smart-wallet-checker.js";
 import { createRegistry } from "../app/tools/registry.js";
 import { getPoolMemoryTool } from "../app/tools/impls/get-pool-memory.js";
 import { assertPoolDeployableTool } from "../app/tools/impls/assert-pool-deployable.js";
@@ -257,11 +261,28 @@ async function boot(): Promise<BootResult> {
     marketMode === "real"
       ? createJupiterTokenInfo({ logger, now: nowFn })
       : createFakeTokenInfo();
+  const rugCheck: RugCheckClient =
+    marketMode === "real" ? createRugcheckAdapter({ logger }) : createFakeRugCheck();
+  const smartWalletChecker: SmartWalletChecker =
+    marketMode === "real"
+      ? createMeteoraSmartWalletChecker({
+          logger,
+          clock,
+          loadWallets: async () => {
+            const list = await smartWallets.list();
+            return list.map(({ addedAt: _drop, ...rest }) => ({
+              ...rest,
+              addedAt: _drop,
+            }));
+          },
+          tokenInfo,
+        })
+      : createFakeSmartWalletChecker();
   const market = {
     pools,
     tokenInfo,
-    rugCheck: createFakeRugCheck(),
-    smartWalletChecker: createFakeSmartWalletChecker(),
+    rugCheck,
+    smartWalletChecker,
   };
   logger.info("boot", `market: ${marketMode}`);
 
