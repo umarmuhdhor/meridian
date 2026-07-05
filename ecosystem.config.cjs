@@ -6,7 +6,7 @@ module.exports = {
   apps: [
     {
       name: "meridian",
-      script: path.join(repoRoot, "index.js"),
+      script: path.join(repoRoot, "dist/entrypoints/daemon.js"),
       cwd: repoRoot,
       interpreter: "node",
       instances: 1,
@@ -18,9 +18,9 @@ module.exports = {
       min_uptime: "10s",
       merge_logs: true,
       time: true,
-      // Always start via this file (npm run pm2:start) so cwd + script path stay pinned to the repo.
       env: {
         NODE_ENV: "production",
+        MERIDIAN_AUTONOMOUS: "true",
       },
     },
   ],

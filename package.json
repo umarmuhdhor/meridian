@@ -1,35 +1,18 @@
 {
   "name": "dlmm-agent",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
-  "description": "Autonomous DLMM LP agent for Meteora on Solana",
-  "main": "index.js",
-  "bin": {
-    "meridian": "cli.js"
-  },
+  "description": "Autonomous DLMM LP agent for Meteora on Solana (TypeScript)",
+  "main": "dist/entrypoints/daemon.js",
   "scripts": {
-    "setup": "node setup.js",
-    "env:encrypt": "node scripts/envrypt.js encrypt",
-    "start": "node index.js",
-    "pm2:start": "pm2 start ecosystem.config.cjs",
-    "pm2:restart": "pm2 restart meridian --update-env",
-    "pm2:logs": "pm2 logs meridian --lines 100",
-    "dev": "DRY_RUN=true node index.js",
-    "dev:ts": "DRY_RUN=true tsx watch src/entrypoints/daemon.ts",
+    "start": "node dist/entrypoints/daemon.js",
+    "dev": "DRY_RUN=true tsx watch src/entrypoints/daemon.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
-    "test": "npm run typecheck && npm run test:unit && npm run test:syntax",
+    "test": "npm run typecheck && npm run test:unit",
     "test:unit": "vitest run",
     "test:watch": "vitest",
-    "test:syntax": "find . -path ./node_modules -prune -o -path ./dist -prune -o -name '*.js' -exec node --check {} \\;",
-    "test:screen": "node test/test-screening.js",
-    "test:agent": "DRY_RUN=true node test/test-agent.js",
-    "postinstall": "node scripts/patch-anchor.js"
-  },
-  "knip": {
-    "ignore": [
-      "discord-listener/**"
-    ]
+    "parallel-run": "./scripts/parallel-run/run-parallel.sh"
   },
   "dependencies": {
     "@meteora-ag/dlmm": "1.9.4",
@@ -42,7 +25,7 @@
     "openai": "^4.73.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
