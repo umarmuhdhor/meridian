@@ -63,6 +63,7 @@ import type { AppConfig } from "../domain/schemas/config.js";
 import { createIntervalScheduler } from "../adapters/scheduler/interval.js";
 import { runScreeningCycle } from "../app/screening/cycle.js";
 import { runManagementCycle } from "../app/management/cycle.js";
+import { createPnlPoller } from "../app/management/pnl-poller.js";
 
 const REPO_ROOT = process.cwd();
 const STATE_DIR = process.env.MERIDIAN_STATE_DIR
@@ -365,8 +366,19 @@ async function main(): Promise<void> {
     console.log(`  screening every ${screenMs / 1000}s | management every ${manageMs / 1000}s`);
     scheduler.every(screenMs, () => runScreeningCycle({ ctx, llm, registry, model }).then(() => {}), "screening");
     scheduler.every(manageMs, () => runManagementCycle({ ctx, llm, registry, model }).then(() => {}), "management");
+    const pollerHandle = createPnlPoller({
+      clock: ctx.clock,
+      logger: ctx.logger,
+      chain: ctx.chain,
+      notifier: ctx.notifier,
+      scheduler,
+      positionRepo: ctx.repos.positions,
+      config: ctx.config.management,
+    });
+    console.log("  pnl-poller: 30s trailing-TP + 15s two-phase confirm");
     const shutdown = (sig: string) => {
       console.log(`\n${sig} — shutting down scheduler`);
+      pollerHandle.stop();
       scheduler.cancelAll();
       process.exit(0);
     };
