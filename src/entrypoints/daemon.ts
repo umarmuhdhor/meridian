@@ -68,6 +68,8 @@ import { runBriefingCycle } from "../app/briefing/cycle.js";
 import { runHealthCycle } from "../app/health/cycle.js";
 import { createAgentMeridianHiveMind } from "../adapters/hivemind/agent-meridian.js";
 import { createHiveMindSync } from "../app/hivemind/sync.js";
+import { createTelegramInbound } from "../adapters/notify/telegram-inbound.js";
+import { routeTelegramMessage } from "../app/telegram/router.js";
 
 const REPO_ROOT = process.cwd();
 const STATE_DIR = process.env.MERIDIAN_STATE_DIR
@@ -434,10 +436,40 @@ async function main(): Promise<void> {
       console.log("  hivemind-sync: disabled (no agentId or manual pull mode)");
     }
     const shutdownHive = hiveSync.stop;
+
+    let shutdownInbound: () => void = () => {};
+    const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+    const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+    const telegramAllowed = (process.env.TELEGRAM_ALLOWED_USER_IDS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (telegramToken && telegramChatId) {
+      const inbound = createTelegramInbound({
+        logger: ctx.logger,
+        botToken: telegramToken,
+        chatId: telegramChatId,
+        allowedUserIds: telegramAllowed,
+      });
+      const handle = inbound.start(async (msg) => {
+        try {
+          await routeTelegramMessage({ ctx, llm, registry, model }, msg);
+        } catch (err) {
+          ctx.logger.warn("telegram-router", "route threw", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      });
+      shutdownInbound = handle.stop;
+      console.log("  telegram-inbound: long-poll REPL armed");
+    } else {
+      console.log("  telegram-inbound: disabled (no TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)");
+    }
     const shutdown = (sig: string) => {
       console.log(`\n${sig} — shutting down scheduler`);
       pollerHandle.stop();
       shutdownHive();
+      shutdownInbound();
       scheduler.cancelAll();
       process.exit(0);
     };
