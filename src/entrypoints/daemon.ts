@@ -159,6 +159,13 @@ async function boot(): Promise<BootResult> {
       loadWalletKeypair(secret),
     ]);
     const pnl = createMeteoraDatapiPnlFetcher({ logger });
+    const writesEnabled = process.env.MERIDIAN_WRITE_UNSAFE === "true";
+    if (writesEnabled) {
+      logger.warn(
+        "boot",
+        "MERIDIAN_WRITE_UNSAFE=true — real Meteora write paths ARMED. Real SOL can move.",
+      );
+    }
     chain = createMeteoraChainClient({
       connection,
       wallet,
@@ -168,6 +175,7 @@ async function boot(): Promise<BootResult> {
       pnl,
       solMode: cfg.value.management.solMode,
       pnlMaxDiffPct: cfg.value.management.pnlSanityMaxDiffPct,
+      writesEnabled,
     });
     const referralAccount =
       process.env.JUPITER_REFERRAL_ACCOUNT ?? cfg.value.jupiter.referralAccount;

@@ -18,6 +18,17 @@ import { assessPnl, roundNum } from "../../../domain/rules/pnl.js";
 import { lamportsToSol } from "./connection.js";
 import type { MeteoraDatapiPnlFetcher, DatapiPnlRecord } from "./datapi-pnl.js";
 import { deriveOpenPnlPct } from "./datapi-pnl.js";
+import type {
+  MeteoraWriteHelpers,
+  NewPositionKeypair,
+  SdkLoader,
+  SendTx,
+} from "./write-paths.js";
+import {
+  claimFeesForPosition,
+  closePositionAt,
+  createMeteoraWriteHelpers,
+} from "./write-paths.js";
 
 export interface MeteoraChainClientOptions {
   connection: SolanaConnection;
@@ -43,6 +54,16 @@ export interface MeteoraChainClientOptions {
    * Mirrors `config.management.solMode`.
    */
   solMode?: boolean;
+  /**
+   * When true, deploy/close/claim run the real Meteora SDK write path (Phase 15B).
+   * When false (default), the write methods throw `MeteoraWritePathNotPortedError` —
+   * matches the Phase 9 stub. The daemon flips this only when `MERIDIAN_WRITE_UNSAFE=true`.
+   */
+  writesEnabled?: boolean;
+  /** Test hooks — real callers omit these; the client falls back to real SDK + web3.js. */
+  sdkLoader?: SdkLoader;
+  sendTx?: SendTx;
+  newPositionKeypair?: NewPositionKeypair;
 }
 
 const DEFAULT_POSITIONS_TTL_MS = 5 * 60_000;
@@ -93,6 +114,60 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
     ttlMs: opts.positionsTtlMs ?? DEFAULT_POSITIONS_TTL_MS,
     clock,
   });
+  const positionToPool = new Map<string, string>();
+
+  const defaultSdkLoader: SdkLoader = async () =>
+    (await import("@meteora-ag/dlmm")) as unknown as import("./write-paths.js").SdkNamespace;
+  const defaultSendTx: SendTx = async (tx, signers) => {
+    const web3 = await import("@solana/web3.js");
+    return web3.sendAndConfirmTransaction(
+      connection.raw as InstanceType<typeof web3.Connection>,
+      tx as InstanceType<typeof web3.Transaction>,
+      signers as InstanceType<typeof web3.Keypair>[],
+      { commitment: "confirmed" },
+    );
+  };
+  const defaultNewPositionKeypair: NewPositionKeypair = async () => {
+    const web3 = await import("@solana/web3.js");
+    const kp = web3.Keypair.generate();
+    return { publicKey: kp.publicKey, address: kp.publicKey.toBase58(), raw: kp };
+  };
+
+  let writeHelpers: MeteoraWriteHelpers | null = null;
+  if (opts.writesEnabled) {
+    writeHelpers = createMeteoraWriteHelpers({
+      connection,
+      wallet,
+      clock,
+      logger,
+      sdkLoader: opts.sdkLoader ?? defaultSdkLoader,
+      sendTx: opts.sendTx ?? defaultSendTx,
+      newPositionKeypair: opts.newPositionKeypair ?? defaultNewPositionKeypair,
+      onWriteCommitted: () => positionsCache.invalidate(),
+    });
+    logger.warn("meteora", "WRITE PATHS ARMED — MERIDIAN_WRITE_UNSAFE=true");
+  }
+
+  function assertWritable(op: string): MeteoraWriteHelpers {
+    if (!writeHelpers) {
+      logger.error("meteora", `${op} called before write path is armed`);
+      throw new MeteoraWritePathNotPortedError(op);
+    }
+    return writeHelpers;
+  }
+
+  async function lookupPoolForPosition(positionAddress: string): Promise<string> {
+    const cached = positionToPool.get(positionAddress);
+    if (cached) return cached;
+    // Force a fresh snapshot — this is the fallback when the client is asked to close/claim
+    // for a position it hasn't seen yet this session.
+    await client.getMyPositions({ force: true });
+    const found = positionToPool.get(positionAddress);
+    if (!found) {
+      throw new Error(`Meteora: pool for position ${positionAddress} not found in snapshot`);
+    }
+    return found;
+  }
 
   async function fetchPositionsSnapshot(): Promise<PositionsSnapshot> {
     const sdk = await loadDlmmSdk();
@@ -214,6 +289,7 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
               ? roundNum(datapi.balancesUsd, 4)
               : null
           : null;
+        positionToPool.set(rp.addr, poolPk);
         positions.push({
           position: rp.addr,
           pool: poolPk,
@@ -274,22 +350,57 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
 
     async getMyPositions(o: GetPositionsOptions = {}): Promise<PositionsSnapshot> {
       const force = o.force ?? false;
-      return positionsCache.get(fetchPositionsSnapshot, force);
+      const snap = await positionsCache.get(fetchPositionsSnapshot, force);
+      // The snapshot loader already populated positionToPool for the fresh path; for cached
+      // hits (older snapshot), re-hydrate the map so lookups stay valid until the next fetch.
+      if (!force) {
+        for (const p of snap.positions) positionToPool.set(p.position, p.pool);
+      }
+      return snap;
     },
 
-    async deployPosition(_args: DeployArgs): Promise<DeployResult> {
-      logger.error("meteora", "deployPosition called before write path is ported");
-      throw new MeteoraWritePathNotPortedError("deployPosition");
+    async deployPosition(args: DeployArgs): Promise<DeployResult> {
+      const helpers = assertWritable("deployPosition");
+      return helpers.deploy(args);
     },
 
-    async closePosition(_pos: string, _reason: string): Promise<CloseResult> {
-      logger.error("meteora", "closePosition called before write path is ported");
-      throw new MeteoraWritePathNotPortedError("closePosition");
+    async closePosition(positionAddress: string, reason: string): Promise<CloseResult> {
+      assertWritable("closePosition");
+      const poolAddress = await lookupPoolForPosition(positionAddress);
+      return closePositionAt(
+        {
+          connection,
+          wallet,
+          clock,
+          logger,
+          sdkLoader: opts.sdkLoader ?? defaultSdkLoader,
+          sendTx: opts.sendTx ?? defaultSendTx,
+          newPositionKeypair: opts.newPositionKeypair ?? defaultNewPositionKeypair,
+          onWriteCommitted: () => positionsCache.invalidate(),
+        },
+        poolAddress,
+        positionAddress,
+        reason,
+      );
     },
 
-    async claimFees(_pos: string): Promise<ClaimResult> {
-      logger.error("meteora", "claimFees called before write path is ported");
-      throw new MeteoraWritePathNotPortedError("claimFees");
+    async claimFees(positionAddress: string): Promise<ClaimResult> {
+      assertWritable("claimFees");
+      const poolAddress = await lookupPoolForPosition(positionAddress);
+      return claimFeesForPosition(
+        {
+          connection,
+          wallet,
+          clock,
+          logger,
+          sdkLoader: opts.sdkLoader ?? defaultSdkLoader,
+          sendTx: opts.sendTx ?? defaultSendTx,
+          newPositionKeypair: opts.newPositionKeypair ?? defaultNewPositionKeypair,
+          onWriteCommitted: () => positionsCache.invalidate(),
+        },
+        poolAddress,
+        positionAddress,
+      );
     },
   };
   return client;

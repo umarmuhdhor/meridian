@@ -1,0 +1,262 @@
+import { describe, it, expect, vi } from "vitest";
+import { fixedClock } from "../../src/ports/clock.js";
+import { nullLogger } from "../../src/ports/logger.js";
+import type { SolanaConnection, WalletKeypair } from "../../src/ports/solana.js";
+import {
+  createMeteoraWriteHelpers,
+  claimFeesForPosition,
+  closePositionAt,
+  type SdkNamespace,
+  type WritePathsDeps,
+} from "../../src/adapters/chain/meteora/write-paths.ts";
+
+const clock = fixedClock("2026-07-05T12:00:00.000Z");
+
+const wallet: WalletKeypair = {
+  address: "WalletAddr11111111111111111111111111111111",
+  raw: { __wallet: true },
+};
+
+function fakeConnection(): SolanaConnection {
+  return { endpoint: "fake://x", raw: { __conn: true }, async getLamports() { return 0n; } };
+}
+
+interface PoolStub {
+  activeBinId: number;
+  hasLiquidity: boolean;
+  claimTxs: unknown[];
+}
+
+function makeSdk(pool: PoolStub): {
+  sdk: SdkNamespace;
+  spy: {
+    initialize: ReturnType<typeof vi.fn>;
+    removeLiquidity: ReturnType<typeof vi.fn>;
+    closePosition: ReturnType<typeof vi.fn>;
+    claimSwapFee: ReturnType<typeof vi.fn>;
+    getPosition: ReturnType<typeof vi.fn>;
+  };
+} {
+  const spy = {
+    initialize: vi.fn(async () => ({ __tx: "INIT_TX" })),
+    removeLiquidity: vi.fn(async () => ({ __tx: "REMOVE_TX" })),
+    closePosition: vi.fn(async () => ({ __tx: "CLOSE_TX" })),
+    claimSwapFee: vi.fn(async () => pool.claimTxs),
+    getPosition: vi.fn(async () => ({
+      positionData: {
+        lowerBinId: -10,
+        upperBinId: 5,
+        positionBinData: pool.hasLiquidity ? [{ positionLiquidity: "1000" }] : [],
+      },
+    })),
+  };
+  const sdk: SdkNamespace = {
+    default: {
+      create: async () => ({
+        lbPair: { tokenXMint: { toBase58: () => "BaseMintAaaa" } },
+        getActiveBin: async () => ({
+          binId: pool.activeBinId,
+          price: 1.05,
+          pricePerLamport: "1.05",
+        }),
+        initializePositionAndAddLiquidityByStrategy: spy.initialize,
+        removeLiquidity: spy.removeLiquidity,
+        closePosition: spy.closePosition,
+        claimSwapFee: spy.claimSwapFee,
+        getPosition: spy.getPosition,
+      }),
+    },
+    StrategyType: { Spot: "SPOT", Curve: "CURVE", BidAsk: "BIDASK" },
+  };
+  return { sdk, spy };
+}
+
+function makeDeps(sdk: SdkNamespace, sendTxImpl?: (tx: unknown, signers: unknown[]) => Promise<string>) {
+  const sendTx = vi.fn(
+    sendTxImpl ?? (async (_tx: unknown, _signers: unknown[]) => "TX_HASH_ABC"),
+  );
+  const newPositionKeypair = vi.fn(async () => ({
+    publicKey: { __posPk: true },
+    address: "PositionAddr222222222222222222222222222222222",
+    raw: { __posKp: true },
+  }));
+  const deps: WritePathsDeps = {
+    connection: fakeConnection(),
+    wallet,
+    clock,
+    logger: nullLogger,
+    sdkLoader: async () => sdk,
+    sendTx,
+    newPositionKeypair,
+    pubkeyFromAddress: async (addr: string) => ({ __pk: addr }),
+    onWriteCommitted: vi.fn(),
+  };
+  return { deps, sendTx, newPositionKeypair };
+}
+
+describe("createMeteoraWriteHelpers.deploy", () => {
+  it("plans, initializes, sends, and returns a DeployResult", async () => {
+    const { sdk, spy } = makeSdk({ activeBinId: 500, hasLiquidity: false, claimTxs: [] });
+    const { deps, sendTx, newPositionKeypair } = makeDeps(sdk);
+    const helpers = createMeteoraWriteHelpers(deps);
+    const result = await helpers.deploy({
+      pool_address: "PoolAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      amount_sol: 0.5,
+      strategy: "bid_ask",
+      bins_below: 40,
+      bins_above: 0,
+      bin_step: 100,
+    });
+    expect(result.success).toBe(true);
+    expect(result.tx).toBe("TX_HASH_ABC");
+    expect(result.dry_run).toBe(false);
+    expect(result.lower_bin).toBe(460);
+    expect(result.upper_bin).toBe(500);
+    expect(result.active_bin).toBe(500);
+    expect(result.strategy).toBe("bid_ask");
+    expect(spy.initialize).toHaveBeenCalledTimes(1);
+    const call = spy.initialize.mock.calls[0]![0] as {
+      strategy: { strategyType: string };
+      totalYAmount: bigint;
+      slippage: number;
+    };
+    expect(call.strategy.strategyType).toBe("BIDASK");
+    expect(call.totalYAmount).toBe(500_000_000n); // 0.5 SOL in lamports
+    expect(call.slippage).toBe(1000);
+    expect(sendTx).toHaveBeenCalledTimes(1);
+    const signers = sendTx.mock.calls[0]![1];
+    expect(signers).toHaveLength(2);
+    expect(newPositionKeypair).toHaveBeenCalledTimes(1);
+    expect(deps.onWriteCommitted).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses wide-range deploys (totalBins > 69)", async () => {
+    const { sdk, spy } = makeSdk({ activeBinId: 500, hasLiquidity: false, claimTxs: [] });
+    const { deps, sendTx } = makeDeps(sdk);
+    const helpers = createMeteoraWriteHelpers(deps);
+    await expect(
+      helpers.deploy({
+        pool_address: "PoolCcccccccccccccccccccccccccccccccccccc",
+        amount_sol: 0.5,
+        strategy: "bid_ask",
+        bins_below: 70,
+        bins_above: 0,
+        bin_step: 100,
+      }),
+    ).rejects.toThrow(/wide-range/);
+    expect(spy.initialize).not.toHaveBeenCalled();
+    expect(sendTx).not.toHaveBeenCalled();
+  });
+
+  it("propagates a plan error before touching the SDK", async () => {
+    const { sdk, spy } = makeSdk({ activeBinId: 500, hasLiquidity: false, claimTxs: [] });
+    const { deps, sendTx } = makeDeps(sdk);
+    const helpers = createMeteoraWriteHelpers(deps);
+    await expect(
+      helpers.deploy({
+        pool_address: "PoolCcccccccccccccccccccccccccccccccccccc",
+        amount_sol: 0.5,
+        strategy: "spot",
+        bins_below: 10, // below MIN_SAFE_BINS_BELOW = 35
+        bins_above: 0,
+        bin_step: 100,
+      }),
+    ).rejects.toThrow(/safety floor/);
+    expect(spy.initialize).not.toHaveBeenCalled();
+    expect(sendTx).not.toHaveBeenCalled();
+  });
+
+  it("maps strategy → StrategyType enum", async () => {
+    const cases: Array<["spot" | "curve" | "bid_ask", string]> = [
+      ["spot", "SPOT"],
+      ["curve", "CURVE"],
+      ["bid_ask", "BIDASK"],
+    ];
+    for (const [strategy, expected] of cases) {
+      const { sdk, spy } = makeSdk({ activeBinId: 500, hasLiquidity: false, claimTxs: [] });
+      const { deps } = makeDeps(sdk);
+      const helpers = createMeteoraWriteHelpers(deps);
+      await helpers.deploy({
+        pool_address: "PoolCcccccccccccccccccccccccccccccccccccc",
+        amount_sol: 0.5,
+        strategy,
+        bins_below: 40,
+        bins_above: 0,
+        bin_step: 100,
+      });
+      const call = spy.initialize.mock.calls[0]![0] as { strategy: { strategyType: string } };
+      expect(call.strategy.strategyType).toBe(expected);
+    }
+  });
+});
+
+describe("claimFeesForPosition", () => {
+  it("sends every claim tx, returns first hash", async () => {
+    const { sdk, spy } = makeSdk({
+      activeBinId: 100,
+      hasLiquidity: false,
+      claimTxs: [{ __t: "A" }, { __t: "B" }],
+    });
+    const hashes = ["HASH_A", "HASH_B"];
+    let idx = 0;
+    const { deps, sendTx } = makeDeps(sdk, async () => hashes[idx++]!);
+    const result = await claimFeesForPosition(deps, "PoolBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "Pos1111111111111111111111111111111111111111");
+    expect(result.success).toBe(true);
+    expect(result.tx).toBe("HASH_A");
+    expect(sendTx).toHaveBeenCalledTimes(2);
+    expect(spy.claimSwapFee).toHaveBeenCalledTimes(1);
+    expect(deps.onWriteCommitted).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns success=false when no claim txs are produced", async () => {
+    const { sdk, spy } = makeSdk({ activeBinId: 100, hasLiquidity: false, claimTxs: [] });
+    const { deps, sendTx } = makeDeps(sdk);
+    const result = await claimFeesForPosition(deps, "PoolBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "Pos1111111111111111111111111111111111111111");
+    expect(result.success).toBe(false);
+    expect(result.tx).toBeNull();
+    expect(sendTx).not.toHaveBeenCalled();
+    expect(spy.claimSwapFee).toHaveBeenCalledTimes(1);
+    expect(deps.onWriteCommitted).not.toHaveBeenCalled();
+  });
+});
+
+describe("closePositionAt", () => {
+  it("removes liquidity when position still holds bin balances", async () => {
+    const { sdk, spy } = makeSdk({ activeBinId: 100, hasLiquidity: true, claimTxs: [] });
+    const { deps, sendTx } = makeDeps(sdk);
+    const result = await closePositionAt(deps, "PoolBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "Pos1111111111111111111111111111111111111111", "stop_loss");
+    expect(result.success).toBe(true);
+    expect(result.reason).toBe("stop_loss");
+    expect(result.base_mint).toBe("BaseMintAaaa");
+    expect(spy.removeLiquidity).toHaveBeenCalledTimes(1);
+    expect(spy.closePosition).not.toHaveBeenCalled();
+    const removeCall = spy.removeLiquidity.mock.calls[0]![0] as {
+      shouldClaimAndClose: boolean;
+      fromBinId: number;
+      toBinId: number;
+    };
+    expect(removeCall.shouldClaimAndClose).toBe(true);
+    expect(removeCall.fromBinId).toBe(-10);
+    expect(removeCall.toBinId).toBe(5);
+    expect(sendTx).toHaveBeenCalledTimes(1);
+    expect(deps.onWriteCommitted).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses closePosition when no liquidity remains", async () => {
+    const { sdk, spy } = makeSdk({ activeBinId: 100, hasLiquidity: false, claimTxs: [] });
+    const { deps, sendTx } = makeDeps(sdk);
+    const result = await closePositionAt(deps, "PoolBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "Pos1111111111111111111111111111111111111111", "low_yield");
+    expect(result.success).toBe(true);
+    expect(spy.removeLiquidity).not.toHaveBeenCalled();
+    expect(spy.closePosition).toHaveBeenCalledTimes(1);
+    expect(sendTx).toHaveBeenCalledTimes(1);
+  });
+
+  it("expands array-return removeLiquidity into multiple sends", async () => {
+    const { sdk, spy } = makeSdk({ activeBinId: 100, hasLiquidity: true, claimTxs: [] });
+    spy.removeLiquidity.mockResolvedValueOnce([{ __t: 1 }, { __t: 2 }, { __t: 3 }]);
+    const { deps, sendTx } = makeDeps(sdk);
+    await closePositionAt(deps, "PoolBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "Pos1111111111111111111111111111111111111111", "oor");
+    expect(sendTx).toHaveBeenCalledTimes(3);
+  });
+});
