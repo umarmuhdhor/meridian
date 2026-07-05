@@ -31,6 +31,8 @@ function makeSdk(pool: PoolStub): {
   sdk: SdkNamespace;
   spy: {
     initialize: ReturnType<typeof vi.fn>;
+    createExtended: ReturnType<typeof vi.fn>;
+    addLiquidityChunkable: ReturnType<typeof vi.fn>;
     removeLiquidity: ReturnType<typeof vi.fn>;
     closePosition: ReturnType<typeof vi.fn>;
     claimSwapFee: ReturnType<typeof vi.fn>;
@@ -39,6 +41,8 @@ function makeSdk(pool: PoolStub): {
 } {
   const spy = {
     initialize: vi.fn(async () => ({ __tx: "INIT_TX" })),
+    createExtended: vi.fn(async () => ({ __tx: "CREATE_EXT_TX" })),
+    addLiquidityChunkable: vi.fn(async () => ({ __tx: "ADD_LIQ_TX" })),
     removeLiquidity: vi.fn(async () => ({ __tx: "REMOVE_TX" })),
     closePosition: vi.fn(async () => ({ __tx: "CLOSE_TX" })),
     claimSwapFee: vi.fn(async () => pool.claimTxs),
@@ -60,6 +64,8 @@ function makeSdk(pool: PoolStub): {
           pricePerLamport: "1.05",
         }),
         initializePositionAndAddLiquidityByStrategy: spy.initialize,
+        createExtendedEmptyPosition: spy.createExtended,
+        addLiquidityByStrategyChunkable: spy.addLiquidityChunkable,
         removeLiquidity: spy.removeLiquidity,
         closePosition: spy.closePosition,
         claimSwapFee: spy.claimSwapFee,
@@ -130,22 +136,58 @@ describe("createMeteoraWriteHelpers.deploy", () => {
     expect(deps.onWriteCommitted).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses wide-range deploys (totalBins > 69)", async () => {
+  it("runs the wide-range path when totalBins > 69", async () => {
+    const { sdk, spy } = makeSdk({ activeBinId: 500, hasLiquidity: false, claimTxs: [] });
+    const hashes = ["CREATE_1", "CREATE_2", "ADD_1", "ADD_2"];
+    let idx = 0;
+    const { deps, sendTx } = makeDeps(sdk, async () => hashes[idx++]!);
+    // Two txs per phase.
+    spy.createExtended.mockResolvedValueOnce([{ __t: "c1" }, { __t: "c2" }]);
+    spy.addLiquidityChunkable.mockResolvedValueOnce([{ __t: "a1" }, { __t: "a2" }]);
+    const helpers = createMeteoraWriteHelpers(deps);
+    const result = await helpers.deploy({
+      pool_address: "PoolCcccccccccccccccccccccccccccccccccccc",
+      amount_sol: 0.5,
+      strategy: "bid_ask",
+      bins_below: 70,
+      bins_above: 0,
+      bin_step: 100,
+    });
+    expect(result.success).toBe(true);
+    expect(result.tx).toBe("CREATE_1");
+    expect(spy.initialize).not.toHaveBeenCalled();
+    expect(spy.createExtended).toHaveBeenCalledTimes(1);
+    expect(spy.addLiquidityChunkable).toHaveBeenCalledTimes(1);
+    // 2 create txs + 2 add-liquidity txs.
+    expect(sendTx).toHaveBeenCalledTimes(4);
+    // First create tx signs with wallet + position; rest sign wallet-only.
+    const firstSigners = sendTx.mock.calls[0]![1];
+    const secondSigners = sendTx.mock.calls[1]![1];
+    const thirdSigners = sendTx.mock.calls[2]![1];
+    expect(firstSigners).toHaveLength(2);
+    expect(secondSigners).toHaveLength(1);
+    expect(thirdSigners).toHaveLength(1);
+    // Add-liquidity slippage matches JS reference (10, not bps).
+    const addCall = spy.addLiquidityChunkable.mock.calls[0]![0] as { slippage: number };
+    expect(addCall.slippage).toBe(10);
+  });
+
+  it("handles wide-range createExtendedEmptyPosition returning a single tx", async () => {
     const { sdk, spy } = makeSdk({ activeBinId: 500, hasLiquidity: false, claimTxs: [] });
     const { deps, sendTx } = makeDeps(sdk);
+    spy.createExtended.mockResolvedValueOnce({ __t: "one-shot" }); // NOT an array
+    spy.addLiquidityChunkable.mockResolvedValueOnce({ __t: "one-add" });
     const helpers = createMeteoraWriteHelpers(deps);
-    await expect(
-      helpers.deploy({
-        pool_address: "PoolCcccccccccccccccccccccccccccccccccccc",
-        amount_sol: 0.5,
-        strategy: "bid_ask",
-        bins_below: 70,
-        bins_above: 0,
-        bin_step: 100,
-      }),
-    ).rejects.toThrow(/wide-range/);
-    expect(spy.initialize).not.toHaveBeenCalled();
-    expect(sendTx).not.toHaveBeenCalled();
+    const result = await helpers.deploy({
+      pool_address: "PoolCcccccccccccccccccccccccccccccccccccc",
+      amount_sol: 0.5,
+      strategy: "bid_ask",
+      bins_below: 70,
+      bins_above: 0,
+      bin_step: 100,
+    });
+    expect(result.success).toBe(true);
+    expect(sendTx).toHaveBeenCalledTimes(2);
   });
 
   it("propagates a plan error before touching the SDK", async () => {

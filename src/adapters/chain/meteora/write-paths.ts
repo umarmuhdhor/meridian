@@ -62,6 +62,20 @@ interface PoolHandle {
     strategy: { minBinId: number; maxBinId: number; strategyType: unknown };
     slippage: number;
   }) => Promise<unknown>;
+  createExtendedEmptyPosition: (
+    minBinId: number,
+    maxBinId: number,
+    positionPubKey: unknown,
+    userPubKey: unknown,
+  ) => Promise<unknown | unknown[]>;
+  addLiquidityByStrategyChunkable: (args: {
+    positionPubKey: unknown;
+    user: unknown;
+    totalXAmount: unknown;
+    totalYAmount: unknown;
+    strategy: { minBinId: number; maxBinId: number; strategyType: unknown };
+    slippage: number;
+  }) => Promise<unknown | unknown[]>;
   claimSwapFee: (args: {
     owner: unknown;
     position: unknown;
@@ -199,41 +213,90 @@ export function createMeteoraWriteHelpers(deps: WritePathsDeps): MeteoraWriteHel
       amountY: args.amount_sol,
     });
 
-    if (plan.isWideRange) {
-      throw new Error(
-        `Meteora deploy: wide-range path (totalBins=${plan.totalBins} > ${WIDE_RANGE_THRESHOLD}) ` +
-          `not ported yet — Phase 15C. Reduce bins_below/bins_above or wait for the wide-range port.`,
-      );
-    }
-
     const buildPk = deps.pubkeyFromAddress ?? defaultPubkeyFromAddress;
     const newPosition = await deps.newPositionKeypair();
     const walletPk = await buildPk(deps.wallet.address);
     const totalYLamports = toLamports(plan.amountY);
     const totalXLamports = toLamports(plan.amountX);
 
-    deps.logger.info("meteora-write", "deployPosition (standard range)", {
-      pool: args.pool_address,
-      strategy: args.strategy,
-      minBinId: plan.minBinId,
-      maxBinId: plan.maxBinId,
-      amount_sol: plan.amountY,
-    });
+    const txHashes: string[] = [];
 
-    const tx = await pool.initializePositionAndAddLiquidityByStrategy({
-      positionPubKey: newPosition.publicKey,
-      user: walletPk,
-      totalXAmount: totalXLamports,
-      totalYAmount: totalYLamports,
-      strategy: {
+    if (plan.isWideRange) {
+      // ── Wide-range path — mirrors tools/dlmm.js:781-817 ─────────────
+      // Solana caps inner-instruction realloc at 10240 bytes, so wide positions
+      // can't fit in one `initializePosition` ix. Two phases:
+      //   1) createExtendedEmptyPosition → 1..N txs, first one signs with newPosition
+      //   2) addLiquidityByStrategyChunkable → 1..N txs, wallet-only signers
+      deps.logger.warn("meteora-write", "deployPosition (WIDE RANGE)", {
+        pool: args.pool_address,
+        strategy: args.strategy,
         minBinId: plan.minBinId,
         maxBinId: plan.maxBinId,
-        strategyType,
-      },
-      slippage: 1000, // 10% in bps — same value used by tools/dlmm.js:826
-    });
+        totalBins: plan.totalBins,
+        amount_sol: plan.amountY,
+      });
+      const createTxsRaw = await pool.createExtendedEmptyPosition(
+        plan.minBinId,
+        plan.maxBinId,
+        newPosition.publicKey,
+        walletPk,
+      );
+      const createTxs = Array.isArray(createTxsRaw) ? createTxsRaw : [createTxsRaw];
+      for (let i = 0; i < createTxs.length; i += 1) {
+        const signers = i === 0 ? [deps.wallet.raw, newPosition.raw] : [deps.wallet.raw];
+        const hash = await deps.sendTx(createTxs[i], signers);
+        txHashes.push(hash);
+        deps.logger.info("meteora-write", `wide-range create tx ${i + 1}/${createTxs.length}`, {
+          tx: hash,
+        });
+      }
 
-    const txHash = await deps.sendTx(tx, [deps.wallet.raw, newPosition.raw]);
+      const addTxsRaw = await pool.addLiquidityByStrategyChunkable({
+        positionPubKey: newPosition.publicKey,
+        user: walletPk,
+        totalXAmount: totalXLamports,
+        totalYAmount: totalYLamports,
+        strategy: {
+          minBinId: plan.minBinId,
+          maxBinId: plan.maxBinId,
+          strategyType,
+        },
+        slippage: 10, // 10 (percent) — matches tools/dlmm.js:810
+      });
+      const addTxs = Array.isArray(addTxsRaw) ? addTxsRaw : [addTxsRaw];
+      for (let i = 0; i < addTxs.length; i += 1) {
+        const hash = await deps.sendTx(addTxs[i], [deps.wallet.raw]);
+        txHashes.push(hash);
+        deps.logger.info(
+          "meteora-write",
+          `wide-range add-liquidity tx ${i + 1}/${addTxs.length}`,
+          { tx: hash },
+        );
+      }
+    } else {
+      // ── Standard range (≤69 bins) ─────────────────────────────────
+      deps.logger.info("meteora-write", "deployPosition (standard range)", {
+        pool: args.pool_address,
+        strategy: args.strategy,
+        minBinId: plan.minBinId,
+        maxBinId: plan.maxBinId,
+        amount_sol: plan.amountY,
+      });
+      const tx = await pool.initializePositionAndAddLiquidityByStrategy({
+        positionPubKey: newPosition.publicKey,
+        user: walletPk,
+        totalXAmount: totalXLamports,
+        totalYAmount: totalYLamports,
+        strategy: {
+          minBinId: plan.minBinId,
+          maxBinId: plan.maxBinId,
+          strategyType,
+        },
+        slippage: 1000, // 10% in bps — same value used by tools/dlmm.js:826
+      });
+      txHashes.push(await deps.sendTx(tx, [deps.wallet.raw, newPosition.raw]));
+    }
+
     deps.onWriteCommitted?.();
 
     return {
@@ -245,7 +308,7 @@ export function createMeteoraWriteHelpers(deps: WritePathsDeps): MeteoraWriteHel
       upper_bin: plan.maxBinId,
       active_bin: activeBin.binId,
       amount_sol: plan.amountY,
-      tx: txHash,
+      tx: txHashes[0] ?? null,
       dry_run: false,
     };
   }
