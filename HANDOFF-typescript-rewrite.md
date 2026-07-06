@@ -1,13 +1,23 @@
-# Meridian TS Rewrite — Session Handoff (post-Phase-21B)
+# Meridian TS Rewrite — Session Handoff (post-Phase-22, Telegram control commands)
 
 **Status:** Full cutover landed on branch `rewrite-ts` / PR #1. Legacy JS
 deleted, `legacy-js` tag pinned to `main` for rollback. TypeScript daemon is
-the only runtime. 339 tests, 45 test files. Not yet merged to `main` — user
-holds veto pending real-env testing.
+the only runtime. Telegram now has full cron control (`/pause /resume /stop`)
+and gated mutating commands (`/close /closeall /deploy`). **356 tests, 46
+test files.** Not yet merged to `main` — user holds veto pending real-env
+testing.
 
-**Branch:** `rewrite-ts`
+**Branch:** `rewrite-ts` (pushed, PR auto-updates)
 **PR:** https://github.com/umarmuhdhor/meridian/pull/1
 **Rollback tag:** `legacy-js` (git tag on `main` @ 5ab14b4)
+**Latest commits on `rewrite-ts`:**
+```
+900b9e0 feat(ts): Telegram /close /closeall /deploy behind writesEnabled gate
+fef42bc feat(ts): Telegram /pause /resume /stop cron control (no chain writes)
+af81966 chore(ts): retire stale .claude commands/agents referencing deleted cli.js
+4cd8d43 docs(ts): update HANDOFF to post-Phase-21B state
+3fe5796 feat(ts): phase 21B — cutover to TypeScript, retire legacy JS daemon
+```
 
 ---
 
@@ -27,7 +37,7 @@ holds veto pending real-env testing.
 ```bash
 npm ci
 npm run typecheck            # strict tsc
-npm run test:unit            # 339 vitest tests
+npm run test:unit            # 356 vitest tests
 npm run build                # → dist/
 npm start                    # boot daemon (env-driven mode)
 npm run dev                  # tsx watch, DRY_RUN=true
@@ -72,9 +82,13 @@ JS daemon exactly as it was pre-cutover.
 | 16 | Telegram inbound REPL (long-poll + command dispatch) | (…) |
 | 21A | Parallel-run harness (script + diff + README) | dc94bf1 |
 | 21B | Cutover — delete legacy JS + retag + rewire package.json | 3fe5796 |
+| 22 cleanup | Retire stale `.claude/commands|agents/*.md` referencing deleted `cli.js` | af81966 |
+| 22A | Scheduler `pause()/resume()/isPaused()` + Telegram `/pause /resume /stop` | fef42bc |
+| 22B | Telegram `/close <n> /closeall /deploy <pool> [sol]` behind `writesEnabled` gate | 900b9e0 |
 
-**Totals now:** ~11k LOC TS across `src/` + `tests/`. 45 test files, 339 unit
-tests. Legacy JS is gone from the tree; recover it via `legacy-js` tag only.
+**Totals now:** ~11.5k LOC TS across `src/` + `tests/`. 46 test files, 356
+unit tests. Legacy JS is gone from the tree; recover it via `legacy-js` tag
+only.
 
 ---
 
@@ -255,7 +269,7 @@ git checkout rewrite-ts && git pull
 npm ci
 
 npm run typecheck             # → clean
-npm run test:unit             # → 339 passed
+npm run test:unit             # → 356 passed
 npm run build                 # → dist/ rebuilt
 
 # One-shot dryrun demo — must end with "outcome: invoked"
@@ -271,6 +285,90 @@ MERIDIAN_CHAIN=meteora npm start
 ```
 
 If any of these breaks, **stop** and fix the regression before new work.
+
+---
+
+## Real-env test plan (operator's runbook, safest → riskiest)
+
+Everything below currently on `rewrite-ts`. Do NOT skip a step. Do NOT
+proceed to the next step if the current one shows any regression.
+
+### Step 1 — Sanity (30s, zero risk)
+```bash
+git checkout rewrite-ts && git pull
+npm ci && npm run typecheck && npm run test:unit && npm run build
+# expect: 356/356 green
+```
+
+### Step 2 — Demo boot (dryrun chain, no Telegram, no network)
+```bash
+rm -rf /tmp/meridian-demo && mkdir -p /tmp/meridian-demo
+MERIDIAN_DEMO=true \
+  MERIDIAN_STATE_DIR=/tmp/meridian-demo \
+  MERIDIAN_FROZEN_TIME=2026-07-05T12:00:00.000Z \
+  npm start
+# expect: "outcome: invoked", one screening cycle, exits 0
+```
+
+### Step 3 — Telegram REPL over dryrun chain (verify all new control commands)
+```bash
+mkdir -p /tmp/meridian-tg
+MERIDIAN_AUTONOMOUS=true \
+  MERIDIAN_STATE_DIR=/tmp/meridian-tg \
+  TELEGRAM_BOT_TOKEN=<bot token> \
+  TELEGRAM_CHAT_ID=<chat id> \
+  TELEGRAM_ALLOWED_USER_IDS=<your user id> \
+  npm start
+```
+Then send in Telegram, one at a time:
+
+| Command | Expected |
+|---|---|
+| `/help` | new commands listed |
+| `/status` `/wallet` `/positions` `/briefing` | read paths work |
+| `/pause` | cron ticks stop (no more "screening: invoked" in logs) |
+| `/pause` (again) | reports "already paused" |
+| `/resume` | ticks resume |
+| `/resume` (again) | reports "already running" |
+| `/close 1` | refused: "writes not armed" (chain untouched) |
+| `/deploy <pool> 0.5` | same refuse |
+| `/closeall` | same refuse |
+| `/stop` | daemon exits gracefully. process ends. |
+
+### Step 4 — Read-only real Meteora (real chain reads, writes STILL refused)
+```bash
+mkdir -p /tmp/meridian-real
+MERIDIAN_AUTONOMOUS=true \
+  MERIDIAN_CHAIN=meteora \
+  MERIDIAN_MARKET=real \
+  MERIDIAN_PRICE=jupiter \
+  MERIDIAN_STATE_DIR=/tmp/meridian-real \
+  RPC_URL=<Helius/QuickNode> \
+  WALLET_PRIVATE_KEY=<base58> \
+  TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... TELEGRAM_ALLOWED_USER_IDS=... \
+  OPENROUTER_API_KEY=... \
+  npm start
+```
+- `MERIDIAN_WRITE_UNSAFE` NOT set → any deploy/close attempt from LLM or
+  Telegram is refused before touching chain.
+- Let it run at least 24h. Watch `/status` and `/positions` line up with
+  chain state (Meteora UI, Solscan).
+- Compare decision log vs legacy branch:
+  ```bash
+  ./scripts/parallel-run/run-parallel.sh
+  ```
+
+### Step 5 — Writes armed (real SOL — only after Step 4 clean + your sign-off)
+Add `MERIDIAN_WRITE_UNSAFE=true` to Step 4's env. Everything above still
+works, plus:
+- Telegram `/close 1` will actually close on-chain.
+- Telegram `/deploy <pool> 0.5` will actually open.
+- LLM-driven screening / management cycles will actually deploy/close.
+
+### Rollback (any time)
+```bash
+git checkout legacy-js && npm ci && npm start
+```
 
 ---
 
