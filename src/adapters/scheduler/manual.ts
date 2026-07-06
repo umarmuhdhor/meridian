@@ -24,6 +24,7 @@ export interface ManualScheduler extends Scheduler {
 export function createManualScheduler(startMs = 0): ManualScheduler {
   const slots = new Set<ManualSlot>();
   let now = startMs;
+  let paused = false;
 
   const scheduler: ManualScheduler = {
     every(intervalMs, job, label): ScheduleHandle {
@@ -59,6 +60,7 @@ export function createManualScheduler(startMs = 0): ManualScheduler {
         if (!due) break;
         now = due.nextFireAt;
         due.nextFireAt += due.intervalMs;
+        if (paused) continue;
         if (due.running) continue;
         due.running = true;
         try {
@@ -73,6 +75,15 @@ export function createManualScheduler(startMs = 0): ManualScheduler {
       let running = 0;
       for (const s of slots) if (s.running) running += 1;
       return { scheduled: slots.size, running };
+    },
+    pause() {
+      paused = true;
+    },
+    resume() {
+      paused = false;
+    },
+    isPaused() {
+      return paused;
     },
   };
   return scheduler;

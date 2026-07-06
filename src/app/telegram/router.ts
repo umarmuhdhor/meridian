@@ -1,6 +1,7 @@
 import type { AppContext } from "../tools/context.js";
 import type { InboundMessage } from "../../ports/telegram-inbound.js";
 import type { LLMClient } from "../../ports/llm-client.js";
+import type { Scheduler } from "../../ports/scheduler.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { runAgentLoop } from "../agent/loop.js";
 import { buildSystemPrompt } from "../../domain/prompt/builder.js";
@@ -12,14 +13,19 @@ export interface TelegramRouterDeps {
   llm: LLMClient;
   registry: ToolRegistry;
   model: string;
+  /** Optional cron-control surface. When absent, `/pause` and `/resume` reply with a note. */
+  scheduler?: Scheduler;
+  /** Optional graceful shutdown. When absent, `/stop` replies with a note. */
+  shutdown?: (reason: string) => void;
 }
 
 /**
  * Dispatch an inbound Telegram message. Read-only commands (/help /status /positions /
- * /wallet /briefing) run direct handlers; anything else is a GENERAL agent tick.
+ * /wallet /briefing) run direct handlers. Cron-control commands (/pause /resume /stop)
+ * run when deps supply a scheduler / shutdown hook. Anything else is a GENERAL agent tick.
  *
- * Commands that mutate on-chain state (/close /deploy /pause etc.) are NOT routed here
- * yet — those are staged for the Telegram-bridge phase that follows this REPL infra.
+ * Commands that mutate on-chain state (/close /deploy) are staged for a subsequent phase
+ * that wires them behind the existing MERIDIAN_WRITE_UNSAFE gate.
  */
 export async function routeTelegramMessage(
   deps: TelegramRouterDeps,
@@ -41,11 +47,58 @@ export async function routeTelegramMessage(
           "  /positions — list open positions",
           "  /wallet    — wallet SOL + USD",
           "  /briefing  — send the daily briefing now",
+          "  /pause     — suspend cron ticks (positions still tracked)",
+          "  /resume    — resume cron ticks",
+          "  /stop      — graceful daemon shutdown",
           "",
           "Any free-form message runs a GENERAL agent tick.",
         ].join("\n"),
       );
       return;
+
+    case "/pause": {
+      if (!deps.scheduler) {
+        await deps.ctx.notifier.notify("info", "Cron control unavailable in this mode.");
+        return;
+      }
+      if (deps.scheduler.isPaused()) {
+        await deps.ctx.notifier.notify("info", "Already paused. /resume to continue.");
+        return;
+      }
+      deps.scheduler.pause();
+      deps.ctx.logger.info("telegram-router", "cron paused via telegram");
+      await deps.ctx.notifier.notify(
+        "info",
+        "⏸ Cron paused. No new screening/management/health ticks. /resume to continue.",
+      );
+      return;
+    }
+
+    case "/resume": {
+      if (!deps.scheduler) {
+        await deps.ctx.notifier.notify("info", "Cron control unavailable in this mode.");
+        return;
+      }
+      if (!deps.scheduler.isPaused()) {
+        await deps.ctx.notifier.notify("info", "Cron already running.");
+        return;
+      }
+      deps.scheduler.resume();
+      deps.ctx.logger.info("telegram-router", "cron resumed via telegram");
+      await deps.ctx.notifier.notify("info", "▶️ Cron resumed.");
+      return;
+    }
+
+    case "/stop": {
+      if (!deps.shutdown) {
+        await deps.ctx.notifier.notify("info", "Shutdown hook unavailable in this mode.");
+        return;
+      }
+      deps.ctx.logger.info("telegram-router", "shutdown requested via telegram");
+      await deps.ctx.notifier.notify("info", "🛑 Shutting down. Goodbye.");
+      deps.shutdown("telegram /stop");
+      return;
+    }
 
     case "/status":
     case "/wallet": {

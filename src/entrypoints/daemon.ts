@@ -438,6 +438,17 @@ async function main(): Promise<void> {
     const shutdownHive = hiveSync.stop;
 
     let shutdownInbound: () => void = () => {};
+    let shuttingDown = false;
+    const shutdown = (sig: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(`\n${sig} — shutting down scheduler`);
+      pollerHandle.stop();
+      shutdownHive();
+      shutdownInbound();
+      scheduler.cancelAll();
+      process.exit(0);
+    };
     const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
     const telegramChatId = process.env.TELEGRAM_CHAT_ID;
     const telegramAllowed = (process.env.TELEGRAM_ALLOWED_USER_IDS ?? "")
@@ -453,7 +464,10 @@ async function main(): Promise<void> {
       });
       const handle = inbound.start(async (msg) => {
         try {
-          await routeTelegramMessage({ ctx, llm, registry, model }, msg);
+          await routeTelegramMessage(
+            { ctx, llm, registry, model, scheduler, shutdown },
+            msg,
+          );
         } catch (err) {
           ctx.logger.warn("telegram-router", "route threw", {
             error: err instanceof Error ? err.message : String(err),
@@ -465,14 +479,6 @@ async function main(): Promise<void> {
     } else {
       console.log("  telegram-inbound: disabled (no TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)");
     }
-    const shutdown = (sig: string) => {
-      console.log(`\n${sig} — shutting down scheduler`);
-      pollerHandle.stop();
-      shutdownHive();
-      shutdownInbound();
-      scheduler.cancelAll();
-      process.exit(0);
-    };
     process.on("SIGINT", () => shutdown("SIGINT"));
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     console.log("(Ctrl+C to stop)");

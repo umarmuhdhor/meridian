@@ -14,6 +14,7 @@ interface Slot {
  */
 export function createIntervalScheduler(logger: Logger): Scheduler {
   const slots = new Set<Slot>();
+  let paused = false;
 
   const scheduler: Scheduler = {
     every(intervalMs: number, job: ScheduledJob, label: string): ScheduleHandle {
@@ -21,6 +22,9 @@ export function createIntervalScheduler(logger: Logger): Scheduler {
         label,
         running: false,
         timer: setInterval(() => {
+          if (paused) {
+            return;
+          }
           if (slot.running) {
             logger.warn("scheduler", `skip: ${label} still busy`);
             return;
@@ -50,6 +54,19 @@ export function createIntervalScheduler(logger: Logger): Scheduler {
       for (const s of slots) clearInterval(s.timer);
       slots.clear();
       logger.info("scheduler", "all jobs cancelled");
+    },
+    pause() {
+      if (paused) return;
+      paused = true;
+      logger.info("scheduler", "paused");
+    },
+    resume() {
+      if (!paused) return;
+      paused = false;
+      logger.info("scheduler", "resumed");
+    },
+    isPaused() {
+      return paused;
     },
   };
   return scheduler;
