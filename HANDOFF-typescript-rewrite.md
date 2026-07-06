@@ -221,7 +221,7 @@ Fail-loud: `MERIDIAN_CHAIN=meteora` without `RPC_URL` OR `WALLET_PRIVATE_KEY` �
 
 | Item | Notes |
 |---|---|
-| `.claude/commands/*.md` + `.claude/agents/*.md` | Reference deleted `cli.js`. Retag them at the operator's TS entrypoint OR delete if unused. |
+| `.claude/commands/*.md` + `.claude/agents/*.md` | 8 files referencing deleted `cli.js` were removed (retired — operator can re-add on their terms). Remaining: `pool-compare.md`, `pool-ohlcv.md` (pure curl, still functional). |
 | Telegram command surface | Router covers `/help /status /wallet /positions /briefing`. Mutating commands (`/close /deploy /pause /resume /stop`) stubbed for future Telegram-bridge phase. |
 | Inline settings menu | JS had `/settings` inline-keyboard menu. Not ported — future scope. |
 | `.claude/settings.json` operational hooks | Still forbids `run_in_background: true`. Fine as-is; note if you tweak. |
