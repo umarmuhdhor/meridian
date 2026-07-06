@@ -465,7 +465,15 @@ async function main(): Promise<void> {
       const handle = inbound.start(async (msg) => {
         try {
           await routeTelegramMessage(
-            { ctx, llm, registry, model, scheduler, shutdown },
+            {
+              ctx,
+              llm,
+              registry,
+              model,
+              scheduler,
+              shutdown,
+              writesEnabled: process.env.MERIDIAN_WRITE_UNSAFE === "true",
+            },
             msg,
           );
         } catch (err) {

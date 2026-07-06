@@ -222,7 +222,7 @@ Fail-loud: `MERIDIAN_CHAIN=meteora` without `RPC_URL` OR `WALLET_PRIVATE_KEY` �
 | Item | Notes |
 |---|---|
 | `.claude/commands/*.md` + `.claude/agents/*.md` | 8 files referencing deleted `cli.js` were removed (retired — operator can re-add on their terms). Remaining: `pool-compare.md`, `pool-ohlcv.md` (pure curl, still functional). |
-| Telegram command surface | Router covers `/help /status /wallet /positions /briefing`. Mutating commands (`/close /deploy /pause /resume /stop`) stubbed for future Telegram-bridge phase. |
+| Telegram command surface | Router covers `/help /status /wallet /positions /briefing /pause /resume /stop /close /closeall /deploy`. `/close /closeall /deploy` are gated on `writesEnabled` (MERIDIAN_WRITE_UNSAFE=true) and refuse cleanly when the daemon boot didn't arm writes. |
 | Inline settings menu | JS had `/settings` inline-keyboard menu. Not ported — future scope. |
 | `.claude/settings.json` operational hooks | Still forbids `run_in_background: true`. Fine as-is; note if you tweak. |
 | GMGN fee source | Legacy `tools/gmgn.js` was optional. Not ported. Add if `config.gmgnFeeSource === "gmgn"` becomes a live path. |

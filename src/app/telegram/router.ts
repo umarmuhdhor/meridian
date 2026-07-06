@@ -17,15 +17,31 @@ export interface TelegramRouterDeps {
   scheduler?: Scheduler;
   /** Optional graceful shutdown. When absent, `/stop` replies with a note. */
   shutdown?: (reason: string) => void;
+  /**
+   * Whether real chain writes are armed (MERIDIAN_WRITE_UNSAFE=true). When false,
+   * `/close /closeall /deploy` refuse without ever calling the chain — the operator
+   * needs to explicitly opt in at boot before mutating commands land here.
+   */
+  writesEnabled?: boolean;
+}
+
+function computeDeployAmountSol(
+  walletSol: number,
+  cfg: { deployAmountSol: number; gasReserve: number; positionSizePct: number },
+  maxDeployAmount: number,
+): number {
+  const available = Math.max(0, walletSol - cfg.gasReserve);
+  const sized = available * cfg.positionSizePct;
+  const clamped = Math.min(Math.max(sized, cfg.deployAmountSol), maxDeployAmount);
+  return Math.round(clamped * 100) / 100;
 }
 
 /**
  * Dispatch an inbound Telegram message. Read-only commands (/help /status /positions /
  * /wallet /briefing) run direct handlers. Cron-control commands (/pause /resume /stop)
- * run when deps supply a scheduler / shutdown hook. Anything else is a GENERAL agent tick.
- *
- * Commands that mutate on-chain state (/close /deploy) are staged for a subsequent phase
- * that wires them behind the existing MERIDIAN_WRITE_UNSAFE gate.
+ * run when deps supply a scheduler / shutdown hook. Mutating on-chain commands
+ * (/close /closeall /deploy) run behind the `writesEnabled` gate. Anything else is
+ * a GENERAL agent tick.
  */
 export async function routeTelegramMessage(
   deps: TelegramRouterDeps,
@@ -50,6 +66,9 @@ export async function routeTelegramMessage(
           "  /pause     — suspend cron ticks (positions still tracked)",
           "  /resume    — resume cron ticks",
           "  /stop      — graceful daemon shutdown",
+          "  /close <n> — close position by 1-based index from /positions (writes-gated)",
+          "  /closeall  — close every open position (writes-gated)",
+          "  /deploy <pool> [sol] — open position on <pool> (writes-gated)",
           "",
           "Any free-form message runs a GENERAL agent tick.",
         ].join("\n"),
@@ -97,6 +116,183 @@ export async function routeTelegramMessage(
       deps.ctx.logger.info("telegram-router", "shutdown requested via telegram");
       await deps.ctx.notifier.notify("info", "🛑 Shutting down. Goodbye.");
       deps.shutdown("telegram /stop");
+      return;
+    }
+
+    case "/close": {
+      if (!deps.writesEnabled) {
+        await deps.ctx.notifier.notify(
+          "info",
+          "❌ /close refused: chain writes not armed. Set MERIDIAN_WRITE_UNSAFE=true at boot.",
+        );
+        return;
+      }
+      const arg = rest[0];
+      if (!arg) {
+        await deps.ctx.notifier.notify("info", "Usage: /close <n>  (1-based index from /positions)");
+        return;
+      }
+      const idx = Number.parseInt(arg, 10);
+      if (!Number.isInteger(idx) || idx < 1) {
+        await deps.ctx.notifier.notify("info", `Bad index "${arg}". Expected positive integer.`);
+        return;
+      }
+      const snap = await deps.ctx.chain.getMyPositions({ force: true });
+      const target = snap.positions[idx - 1];
+      if (!target) {
+        await deps.ctx.notifier.notify(
+          "info",
+          `No position at index ${idx}. Open positions: ${snap.total_positions}.`,
+        );
+        return;
+      }
+      deps.ctx.logger.info("telegram-router", "close requested via telegram", {
+        position: target.position,
+        pair: target.pair,
+      });
+      await deps.ctx.notifier.notify(
+        "info",
+        `Closing #${idx} ${target.pair} (${target.position.slice(0, 8)}…)…`,
+      );
+      try {
+        const result = await deps.ctx.chain.closePosition(target.position, "telegram /close");
+        if (result.success) {
+          await deps.ctx.notifier.notify(
+            "info",
+            `✅ Closed #${idx} ${target.pair}. tx=${result.tx ?? "(n/a)"}`,
+          );
+        } else {
+          await deps.ctx.notifier.notify(
+            "warn",
+            `⚠️ Close returned failure (reason=${result.reason}).`,
+          );
+        }
+      } catch (err) {
+        deps.ctx.logger.warn("telegram-router", "close threw", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await deps.ctx.notifier.notify(
+          "warn",
+          `❌ Close failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return;
+    }
+
+    case "/closeall": {
+      if (!deps.writesEnabled) {
+        await deps.ctx.notifier.notify(
+          "info",
+          "❌ /closeall refused: chain writes not armed. Set MERIDIAN_WRITE_UNSAFE=true at boot.",
+        );
+        return;
+      }
+      const snap = await deps.ctx.chain.getMyPositions({ force: true });
+      if (snap.total_positions === 0) {
+        await deps.ctx.notifier.notify("info", "No open positions to close.");
+        return;
+      }
+      deps.ctx.logger.info("telegram-router", "closeall requested via telegram", {
+        count: snap.total_positions,
+      });
+      await deps.ctx.notifier.notify(
+        "info",
+        `Closing all ${snap.total_positions} position(s)…`,
+      );
+      let ok = 0;
+      let fail = 0;
+      for (const p of snap.positions) {
+        try {
+          const result = await deps.ctx.chain.closePosition(p.position, "telegram /closeall");
+          if (result.success) ok += 1;
+          else fail += 1;
+        } catch (err) {
+          fail += 1;
+          deps.ctx.logger.warn("telegram-router", "closeall item threw", {
+            position: p.position,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      await deps.ctx.notifier.notify(
+        "info",
+        `/closeall done. success=${ok} failed=${fail}`,
+      );
+      return;
+    }
+
+    case "/deploy": {
+      if (!deps.writesEnabled) {
+        await deps.ctx.notifier.notify(
+          "info",
+          "❌ /deploy refused: chain writes not armed. Set MERIDIAN_WRITE_UNSAFE=true at boot.",
+        );
+        return;
+      }
+      const poolAddress = rest[0];
+      if (!poolAddress) {
+        await deps.ctx.notifier.notify(
+          "info",
+          "Usage: /deploy <pool_address> [amount_sol]  (uses config strategy + bins)",
+        );
+        return;
+      }
+      let amountOverride: number | null = null;
+      if (rest[1] != null) {
+        const n = Number.parseFloat(rest[1]);
+        if (!Number.isFinite(n) || n <= 0) {
+          await deps.ctx.notifier.notify("info", `Bad amount "${rest[1]}". Expected positive number.`);
+          return;
+        }
+        amountOverride = n;
+      }
+      const wallet = await deps.ctx.chain.getWalletBalance();
+      const amountSol =
+        amountOverride ??
+        computeDeployAmountSol(
+          wallet.sol,
+          deps.ctx.config.management,
+          deps.ctx.config.risk.maxDeployAmount,
+        );
+      const { strategy, defaultBinsBelow } = deps.ctx.config.strategy;
+      deps.ctx.logger.info("telegram-router", "deploy requested via telegram", {
+        pool_address: poolAddress,
+        amount_sol: amountSol,
+        strategy,
+        bins_below: defaultBinsBelow,
+      });
+      await deps.ctx.notifier.notify(
+        "info",
+        `Deploying ${amountSol} SOL on ${poolAddress.slice(0, 8)}… (${strategy}, ${defaultBinsBelow} bins)…`,
+      );
+      try {
+        const result = await deps.ctx.chain.deployPosition({
+          pool_address: poolAddress,
+          amount_sol: amountSol,
+          strategy,
+          bins_below: defaultBinsBelow,
+          bins_above: 0,
+        });
+        if (result.success) {
+          await deps.ctx.notifier.notify(
+            "info",
+            `✅ Deployed. position=${result.position_address.slice(0, 8)}… tx=${result.tx ?? "(n/a)"}`,
+          );
+        } else {
+          await deps.ctx.notifier.notify(
+            "warn",
+            `⚠️ Deploy returned failure. bins=${result.lower_bin}..${result.upper_bin}`,
+          );
+        }
+      } catch (err) {
+        deps.ctx.logger.warn("telegram-router", "deploy threw", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await deps.ctx.notifier.notify(
+          "warn",
+          `❌ Deploy failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       return;
     }
 

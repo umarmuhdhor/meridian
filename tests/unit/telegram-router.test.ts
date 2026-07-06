@@ -4,7 +4,9 @@ import type { LLMClient } from "../../src/ports/llm-client.js";
 import type { ToolRegistry } from "../../src/app/tools/registry.js";
 import { routeTelegramMessage } from "../../src/app/telegram/router.js";
 import { createManualScheduler } from "../../src/adapters/scheduler/manual.js";
+import { createDryRunChainClient } from "../../src/adapters/chain/dry-run.js";
 import { createCollectingNotifier, type CollectingNotifier } from "../../src/adapters/notify/collecting-notifier.js";
+import { fixedClock } from "../../src/ports/clock.js";
 import { makeCtx } from "./tool-context.js";
 
 const throwingLlm: LLMClient = {
@@ -136,6 +138,223 @@ describe("routeTelegramMessage — control commands", () => {
     );
 
     expect(notifyTexts(notifier).join("\n")).toMatch(/unavailable/i);
+  });
+
+  it("/close without writesEnabled refuses without touching chain", async () => {
+    const notifier = createCollectingNotifier();
+    const clock = fixedClock("2026-07-05T12:00:00.000Z");
+    const chain = createDryRunChainClient({
+      clock,
+      seed: {
+        positions: [
+          {
+            position: "POS_ONE_1111111111111111111111111",
+            pool: "POOL_A",
+            base_mint: "BASE_A",
+            pair: "AAA/SOL",
+            in_range: true,
+            active_bin: 100,
+            lower_bin: 90,
+            upper_bin: 110,
+            amount_sol: 1,
+            total_value_usd: 150,
+            pnl_pct: 0,
+            pnl_pct_suspicious: false,
+            deployed_at: "2026-07-05T12:00:00.000Z",
+            unclaimed_fees_usd: 0,
+          },
+        ],
+      },
+    });
+    const ctx = makeCtx({ notifier, chain });
+
+    await routeTelegramMessage(
+      { ctx, llm: throwingLlm, registry: emptyRegistry, model: "x" /* writesEnabled omitted */ },
+      msg("/close 1"),
+    );
+
+    expect(notifyTexts(notifier).join("\n")).toMatch(/writes not armed|refused/i);
+    // Position still exists — chain not touched.
+    expect(chain.peekPositions()).toHaveLength(1);
+  });
+
+  it("/close <n> closes the Nth position when writesEnabled", async () => {
+    const notifier = createCollectingNotifier();
+    const clock = fixedClock("2026-07-05T12:00:00.000Z");
+    const chain = createDryRunChainClient({
+      clock,
+      seed: {
+        positions: [
+          {
+            position: "POS_ONE_1111111111111111111111111",
+            pool: "POOL_A",
+            base_mint: "BASE_A",
+            pair: "AAA/SOL",
+            in_range: true,
+            active_bin: 100,
+            lower_bin: 90,
+            upper_bin: 110,
+            amount_sol: 1,
+            total_value_usd: 150,
+            pnl_pct: 0,
+            pnl_pct_suspicious: false,
+            deployed_at: "2026-07-05T12:00:00.000Z",
+            unclaimed_fees_usd: 0,
+          },
+          {
+            position: "POS_TWO_2222222222222222222222222",
+            pool: "POOL_B",
+            base_mint: "BASE_B",
+            pair: "BBB/SOL",
+            in_range: true,
+            active_bin: 100,
+            lower_bin: 90,
+            upper_bin: 110,
+            amount_sol: 1,
+            total_value_usd: 150,
+            pnl_pct: 0,
+            pnl_pct_suspicious: false,
+            deployed_at: "2026-07-05T12:00:00.000Z",
+            unclaimed_fees_usd: 0,
+          },
+        ],
+      },
+    });
+    const ctx = makeCtx({ notifier, chain });
+
+    await routeTelegramMessage(
+      { ctx, llm: throwingLlm, registry: emptyRegistry, model: "x", writesEnabled: true },
+      msg("/close 2"),
+    );
+
+    expect(chain.peekPositions().map((p) => p.position)).toEqual([
+      "POS_ONE_1111111111111111111111111",
+    ]);
+    expect(notifyTexts(notifier).join("\n")).toMatch(/Closed #2 BBB\/SOL/);
+  });
+
+  it("/close with bad index reports without touching chain", async () => {
+    const notifier = createCollectingNotifier();
+    const clock = fixedClock("2026-07-05T12:00:00.000Z");
+    const chain = createDryRunChainClient({
+      clock,
+      seed: { positions: [] },
+    });
+    const ctx = makeCtx({ notifier, chain });
+
+    await routeTelegramMessage(
+      { ctx, llm: throwingLlm, registry: emptyRegistry, model: "x", writesEnabled: true },
+      msg("/close 5"),
+    );
+
+    expect(notifyTexts(notifier).join("\n")).toMatch(/No position at index 5/);
+  });
+
+  it("/closeall closes every open position when writesEnabled", async () => {
+    const notifier = createCollectingNotifier();
+    const clock = fixedClock("2026-07-05T12:00:00.000Z");
+    const chain = createDryRunChainClient({
+      clock,
+      seed: {
+        positions: [
+          {
+            position: "POS_ONE_1111111111111111111111111",
+            pool: "POOL_A",
+            base_mint: "BASE_A",
+            pair: "AAA/SOL",
+            in_range: true,
+            active_bin: 100,
+            lower_bin: 90,
+            upper_bin: 110,
+            amount_sol: 1,
+            total_value_usd: 150,
+            pnl_pct: 0,
+            pnl_pct_suspicious: false,
+            deployed_at: "2026-07-05T12:00:00.000Z",
+            unclaimed_fees_usd: 0,
+          },
+          {
+            position: "POS_TWO_2222222222222222222222222",
+            pool: "POOL_B",
+            base_mint: "BASE_B",
+            pair: "BBB/SOL",
+            in_range: true,
+            active_bin: 100,
+            lower_bin: 90,
+            upper_bin: 110,
+            amount_sol: 1,
+            total_value_usd: 150,
+            pnl_pct: 0,
+            pnl_pct_suspicious: false,
+            deployed_at: "2026-07-05T12:00:00.000Z",
+            unclaimed_fees_usd: 0,
+          },
+        ],
+      },
+    });
+    const ctx = makeCtx({ notifier, chain });
+
+    await routeTelegramMessage(
+      { ctx, llm: throwingLlm, registry: emptyRegistry, model: "x", writesEnabled: true },
+      msg("/closeall"),
+    );
+
+    expect(chain.peekPositions()).toHaveLength(0);
+    const text = notifyTexts(notifier).join("\n");
+    expect(text).toMatch(/success=2/);
+    expect(text).toMatch(/failed=0/);
+  });
+
+  it("/deploy without writesEnabled refuses without touching chain", async () => {
+    const notifier = createCollectingNotifier();
+    const clock = fixedClock("2026-07-05T12:00:00.000Z");
+    const chain = createDryRunChainClient({ clock, seed: { positions: [], walletSol: 10 } });
+    const ctx = makeCtx({ notifier, chain });
+
+    await routeTelegramMessage(
+      { ctx, llm: throwingLlm, registry: emptyRegistry, model: "x" },
+      msg("/deploy POOL_XYZ 1.5"),
+    );
+
+    expect(notifyTexts(notifier).join("\n")).toMatch(/writes not armed|refused/i);
+    expect(chain.peekPositions()).toHaveLength(0);
+  });
+
+  it("/deploy <pool> [sol] opens a position with config strategy/bins", async () => {
+    const notifier = createCollectingNotifier();
+    const clock = fixedClock("2026-07-05T12:00:00.000Z");
+    const chain = createDryRunChainClient({
+      clock,
+      seed: {
+        positions: [],
+        walletSol: 10,
+        activeBins: { POOL_XYZ: { binId: 200, price: 0.02, pricePerLamport: "1" } },
+      },
+    });
+    const ctx = makeCtx({ notifier, chain });
+
+    await routeTelegramMessage(
+      { ctx, llm: throwingLlm, registry: emptyRegistry, model: "x", writesEnabled: true },
+      msg("/deploy POOL_XYZ 1.25"),
+    );
+
+    const positions = chain.peekPositions();
+    expect(positions).toHaveLength(1);
+    expect(positions[0]?.pool).toBe("POOL_XYZ");
+    expect(positions[0]?.amount_sol).toBeCloseTo(1.25, 5);
+    expect(notifyTexts(notifier).join("\n")).toMatch(/Deployed/);
+  });
+
+  it("/deploy without pool address prints usage", async () => {
+    const notifier = createCollectingNotifier();
+    const ctx = makeCtx({ notifier });
+
+    await routeTelegramMessage(
+      { ctx, llm: throwingLlm, registry: emptyRegistry, model: "x", writesEnabled: true },
+      msg("/deploy"),
+    );
+
+    expect(notifyTexts(notifier).join("\n")).toMatch(/Usage: \/deploy/);
   });
 
   it("/help mentions the new control commands", async () => {
