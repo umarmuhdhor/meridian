@@ -10,6 +10,7 @@ import {
   Crosshair,
   TrendUp,
   Scroll,
+  BookOpen,
 } from "@phosphor-icons/react";
 import type { Icon } from "@/lib/icon";
 
@@ -32,6 +33,7 @@ export const NAV: NavItem[] = [
   { href: "/wallet", label: "Wallet", icon: Wallet },
   { href: "/screen", label: "Screen", icon: Crosshair },
   { href: "/learning", label: "Learning", icon: TrendUp },
+  { href: "/belajar", label: "Belajar", icon: BookOpen },
   { href: "/logs", label: "Logs", icon: Scroll },
 ];
 

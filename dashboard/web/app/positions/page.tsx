@@ -36,9 +36,9 @@ export default function PositionsPage() {
       )}
 
       {/* Desktop table */}
-      <div className="hidden overflow-x-auto rounded-[var(--radius-lg)] border border-border md:block">
-        <table className="w-full border-collapse text-[13px]">
-          <thead className="sticky top-14 z-10 bg-surface-1">
+      <div className="hidden overflow-x-auto rounded-[var(--radius-lg)] border border-border lg:block">
+        <table className="w-full min-w-[860px] border-collapse text-[13px]">
+          <thead className="bg-surface-1">
             <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-text-tertiary">
               <th className="px-3 py-2.5 font-medium">Pool</th>
               <th className="px-3 py-2.5 font-medium">Strategy</th>
@@ -80,7 +80,7 @@ export default function PositionsPage() {
       </div>
 
       {/* Mobile cards */}
-      <div className="grid grid-cols-1 gap-4 md:hidden">
+      <div className="grid grid-cols-1 gap-4 lg:hidden sm:grid-cols-2">
         {positions.map((p) => (
           <PositionCard key={p.position} p={p} actions={<PositionActions p={p} />} />
         ))}
