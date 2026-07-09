@@ -55,6 +55,18 @@ export function absoluteTime(ts: string | number | null | undefined): string {
   return new Date(t).toISOString().replace("T", " ").slice(0, 16) + " UTC";
 }
 
+// Compact local date-time for table cells: "9 Jul 18:16" (this year) or "9 Jul 25 18:16".
+export function shortDateTime(ts: string | number | null | undefined): string {
+  if (ts == null) return DASH;
+  const t = typeof ts === "number" ? ts : Date.parse(ts);
+  if (!Number.isFinite(t)) return DASH;
+  const d = new Date(t);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const day = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(sameYear ? {} : { year: "2-digit" }) });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `${day} ${time}`;
+}
+
 // Compact duration from minutes: "4h 12m", "3d 2h".
 export function formatDuration(minutes: number | null | undefined): string {
   if (minutes == null || !Number.isFinite(minutes) || minutes < 0) return DASH;

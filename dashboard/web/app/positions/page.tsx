@@ -1,15 +1,16 @@
 "use client";
 
 import { ChartLineUp } from "@phosphor-icons/react";
-import { usePositions } from "@/lib/hooks";
+import { usePositions, useFile } from "@/lib/hooks";
 import { PositionCard } from "@/components/PositionCard";
 import { PositionActions } from "@/components/PositionActions";
+import { PositionHistory } from "@/components/PositionHistory";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Address } from "@/components/Address";
 import { SkeletonRows, EmptyState, ErrorState } from "@/components/states";
 import { pnlColorClass } from "@/lib/pnl-color";
 import { formatPnlPct, formatPnlUsd, formatUsd, formatDuration, binRange } from "@/lib/format";
-import type { Position } from "@/lib/types";
+import type { Position, LessonsFile, DecisionLogFile } from "@/lib/types";
 
 function rowStatus(p: Position) {
   if (p.in_range === false) {
@@ -18,7 +19,7 @@ function rowStatus(p: Position) {
   return <StatusBadge status="in_range" />;
 }
 
-export default function PositionsPage() {
+function OpenPositions() {
   const q = usePositions();
   const positions: Position[] = q.data?.positions ?? [];
 
@@ -85,6 +86,37 @@ export default function PositionsPage() {
           <PositionCard key={p.position} p={p} actions={<PositionActions p={p} />} />
         ))}
       </div>
+    </div>
+  );
+}
+
+function HistorySection() {
+  const lessonsQ = useFile<LessonsFile>("lessons");
+  const decisionsQ = useFile<DecisionLogFile>("decision-log");
+
+  if (lessonsQ.isLoading) return <SkeletonRows rows={4} />;
+  if (lessonsQ.isError)
+    return <ErrorState message="Failed to load position history." onRetry={() => lessonsQ.refetch()} />;
+
+  return (
+    <PositionHistory
+      performance={lessonsQ.data?.performance}
+      decisions={decisionsQ.data?.decisions}
+    />
+  );
+}
+
+export default function PositionsPage() {
+  return (
+    <div className="flex flex-col gap-6">
+      <section>
+        <h2 className="mb-3 text-[13px] font-semibold uppercase tracking-wide text-text-tertiary">Open positions</h2>
+        <OpenPositions />
+      </section>
+      <section>
+        <h2 className="mb-3 text-[13px] font-semibold uppercase tracking-wide text-text-tertiary">History</h2>
+        <HistorySection />
+      </section>
     </div>
   );
 }

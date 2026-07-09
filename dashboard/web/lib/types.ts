@@ -94,6 +94,21 @@ export interface PerformanceEntry {
   position?: string;
   pool?: string;
   pool_name?: string;
+  base_mint?: string;
+  strategy?: string;
+  bin_range?: { min?: number; max?: number; bins_below?: number; bins_above?: number };
+  bin_step?: number;
+  volatility?: number;
+  fee_tvl_ratio?: number;
+  organic_score?: number;
+  amount_sol?: number;
+  initial_value_usd?: number;
+  final_value_usd?: number;
+  minutes_in_range?: number;
+  entry_mcap?: number;
+  exit_mcap?: number;
+  entry_tvl?: number;
+  exit_tvl?: number;
   pnl_pct?: number;
   pnl_usd?: number;
   fees_earned_usd?: number;
@@ -101,6 +116,7 @@ export interface PerformanceEntry {
   minutes_held?: number;
   close_reason?: string;
   closed_at?: string;
+  recorded_at?: string;
   ts?: string;
   signal_snapshot?: Record<string, unknown>;
 }
@@ -127,6 +143,8 @@ export interface Decision {
   type?: DecisionType | string;
   actor?: string;
   pool?: string;
+  pool_name?: string;
+  position?: string;
   summary?: string;
   reason?: string;
   risks?: string[];
