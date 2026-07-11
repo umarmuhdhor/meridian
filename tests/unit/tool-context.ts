@@ -21,6 +21,7 @@ import { createFakePoolDiscovery } from "../../src/adapters/market/fake-pool-dis
 import { createFakeTokenInfo } from "../../src/adapters/market/fake-token-info.js";
 import { createFakeRugCheck } from "../../src/adapters/market/fake-rug-check.js";
 import { createFakeSmartWalletChecker } from "../../src/adapters/market/fake-smart-wallet-checker.js";
+import { createFakeStudy } from "../../src/adapters/market/fake-study.js";
 import { mgmt } from "./fixtures.js";
 
 const cfg: AppConfig = {
@@ -277,6 +278,7 @@ export function makeCtx(over: CtxOverrides = {}): AppContext {
     tokenInfo: over.market?.tokenInfo ?? createFakeTokenInfo(),
     rugCheck: over.market?.rugCheck ?? createFakeRugCheck(),
     smartWalletChecker: over.market?.smartWalletChecker ?? createFakeSmartWalletChecker(),
+    study: over.market?.study ?? createFakeStudy(),
   };
   return {
     clock,

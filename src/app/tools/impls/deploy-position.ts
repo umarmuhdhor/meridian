@@ -5,6 +5,7 @@ import { poolCooldownGate } from "../safety/pool-cooldown.js";
 import { walletBalanceGate } from "../safety/wallet-balance.js";
 import { maxPositionsGate } from "../safety/max-positions.js";
 import { tokenBlacklistGate } from "../safety/token-blacklist.js";
+import { deployerBlocklistGate } from "../safety/deployer-blocklist.js";
 import { logDeployDecision } from "../post/log-decision.js";
 import { notifyDeployHook } from "../post/notify.js";
 
@@ -35,7 +36,7 @@ export const deployPositionTool = defineTool({
   result: DeployResultSchema,
   oncePerSession: true,
   noRetry: true,
-  safety: [poolCooldownGate, tokenBlacklistGate, walletBalanceGate, maxPositionsGate],
+  safety: [poolCooldownGate, tokenBlacklistGate, deployerBlocklistGate, walletBalanceGate, maxPositionsGate],
   post: [notifyDeployHook, logDeployDecision("SCREENER")],
   execute: async (args, ctx) => {
     return ctx.chain.deployPosition({

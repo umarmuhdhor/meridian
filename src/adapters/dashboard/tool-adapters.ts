@@ -53,15 +53,8 @@ export const RESULT_ADAPTERS: Record<string, (result: unknown) => unknown> = {
       signal: count > 0 ? `${count} tracked wallet(s) active in this pool` : "no tracked wallets in this pool",
     };
   },
-  // tool: WalletBalance (SOL only) → web wants total_usd + tokens[]
-  get_wallet_balance: (r) => {
-    const o = asRecord(r);
-    return {
-      ...o,
-      total_usd: typeof o.total_usd === "number" ? o.total_usd : (o.sol_usd ?? 0),
-      tokens: Array.isArray(o.tokens) ? o.tokens : [],
-    };
-  },
+  // get_wallet_balance is enriched asynchronously in routes.ts (assembleWalletBalance):
+  // it needs a live chain call for tokens[] + total_usd, which a pure adapter can't do.
 };
 
 export const adaptArgs = (name: string, args: Record<string, unknown>): Record<string, unknown> =>

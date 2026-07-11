@@ -12,9 +12,37 @@ import type {
   OnChainPosition,
   PositionsSnapshot,
   WalletBalance,
+  WalletToken,
 } from "../../../domain/schemas/chain.js";
 import { createTtlCache } from "../../../shared/cache.js";
 import { assessPnl, roundNum } from "../../../domain/rules/pnl.js";
+
+const JUPITER_PRICE_BASE_URL = "https://price.jup.ag/v6";
+
+/** Best-effort batch USD price lookup keyed by mint (empty map on any failure). */
+async function fetchJupiterPrices(mints: string[]): Promise<Record<string, number>> {
+  if (mints.length === 0) return {};
+  const fetchImpl = globalThis.fetch;
+  if (typeof fetchImpl !== "function") return {};
+  const url = `${JUPITER_PRICE_BASE_URL}/price?ids=${encodeURIComponent(mints.join(","))}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetchImpl(url, { signal: controller.signal });
+    if (!res.ok) return {};
+    const body = (await res.json()) as { data?: Record<string, { price?: number | string }> };
+    const out: Record<string, number> = {};
+    for (const [mint, v] of Object.entries(body.data ?? {})) {
+      const n = typeof v.price === "number" ? v.price : Number(v.price);
+      if (Number.isFinite(n)) out[mint] = n;
+    }
+    return out;
+  } catch {
+    return {};
+  } finally {
+    clearTimeout(timer);
+  }
+}
 import { lamportsToSol } from "./connection.js";
 import type { MeteoraDatapiPnlFetcher, DatapiPnlRecord } from "./datapi-pnl.js";
 import { deriveOpenPnlPct } from "./datapi-pnl.js";
@@ -328,6 +356,45 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
         sol_price: solPrice,
         fetched_at: clock.now().toISOString(),
       };
+    },
+
+    async getWalletTokens(): Promise<WalletToken[]> {
+      const web3 = await import("@solana/web3.js");
+      const conn = connection.raw as InstanceType<typeof web3.Connection>;
+      const owner = new web3.PublicKey(wallet.address);
+      const TOKEN_PROGRAM_ID = new web3.PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+      let holdings: { mint: string; balance: number }[] = [];
+      try {
+        const resp = await conn.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID });
+        for (const { account } of resp.value) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const info = (account.data as any)?.parsed?.info;
+          const mint: unknown = info?.mint;
+          const amt: unknown = info?.tokenAmount?.uiAmount;
+          if (typeof mint === "string" && typeof amt === "number" && amt > 0) {
+            holdings.push({ mint, balance: amt });
+          }
+        }
+      } catch (err) {
+        logger.warn("meteora", "getWalletTokens: token accounts fetch failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return [];
+      }
+      if (holdings.length === 0) return [];
+      // Batch-price via Jupiter (best-effort; unpriced tokens surface usd:null).
+      const prices = await fetchJupiterPrices(holdings.map((h) => h.mint)).catch(
+        (): Record<string, number> => ({}),
+      );
+      return holdings.map((h) => {
+        const p = prices[h.mint];
+        return {
+          mint: h.mint,
+          symbol: null,
+          balance: h.balance,
+          usd: typeof p === "number" ? roundNum(h.balance * p, 2) : null,
+        };
+      });
     },
 
     async getActiveBin(poolAddress: string): Promise<ActiveBin> {

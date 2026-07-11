@@ -6,6 +6,7 @@ import type {
   DeployResult,
   PositionsSnapshot,
   WalletBalance,
+  WalletToken,
 } from "../domain/schemas/chain.js";
 
 export interface GetPositionsOptions {
@@ -23,6 +24,11 @@ export interface GetPositionsOptions {
  */
 export interface ChainClient {
   getWalletBalance(walletAddress?: string): Promise<WalletBalance>;
+  /**
+   * Optional: list SPL token holdings (mint, balance, USD). Adapters without a token
+   * source (e.g. dry-run) may omit it — callers must treat it as possibly undefined.
+   */
+  getWalletTokens?(walletAddress?: string): Promise<WalletToken[]>;
   getActiveBin(poolAddress: string): Promise<ActiveBin>;
   getMyPositions(opts?: GetPositionsOptions): Promise<PositionsSnapshot>;
   deployPosition(args: DeployArgs): Promise<DeployResult>;

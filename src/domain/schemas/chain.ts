@@ -102,6 +102,15 @@ export const WalletBalanceSchema = z.object({
 });
 export type WalletBalance = z.infer<typeof WalletBalanceSchema>;
 
+/** One SPL token holding in the wallet (for the dashboard wallet page). */
+export const WalletTokenSchema = z.object({
+  mint: z.string(),
+  symbol: z.string().nullable(),
+  balance: z.number().nonnegative(),
+  usd: z.number().nonnegative().nullable(),
+});
+export type WalletToken = z.infer<typeof WalletTokenSchema>;
+
 /** Jupiter swap quote + tx. */
 export const SwapArgsSchema = z.object({
   input_mint: z.string(),

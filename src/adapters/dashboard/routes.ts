@@ -18,6 +18,7 @@ import { isAllowedTool, isWriteTool, resolveFile, CHAT_READ_TOOLS } from "./allo
 import { acquire, release } from "./inflight.js";
 import { redactSecrets } from "./redact.js";
 import { adaptArgs, adaptResult } from "./tool-adapters.js";
+import { assembleWalletBalance } from "./wallet-balance.js";
 
 export type BridgeRouteDeps = BridgeDeps & { sse: SseHub };
 
@@ -114,22 +115,10 @@ export async function handleRequest(
 
   // ── GET /state/summary ───────────────────────────────────────
   if (req.method === "GET" && p === "/state/summary") {
-    const [summary, bal] = await Promise.all([
+    const [summary, balance] = await Promise.all([
       buildStateSummary(ctx.repos.positions, ctx.clock).catch(() => null),
-      ctx.chain.getWalletBalance().catch(() => null),
+      assembleWalletBalance(ctx.chain).catch(() => null),
     ]);
-    // The TS chain exposes SOL only; shape it to the web's WalletBalance (tokens/total_usd
-    // absent → empty/best-effort, so the wallet page renders without the multi-token list).
-    const balance = bal
-      ? {
-          sol: bal.sol,
-          sol_usd: bal.sol_usd,
-          sol_price: bal.sol_price,
-          usdc: 0,
-          tokens: [] as unknown[],
-          total_usd: bal.sol_usd,
-        }
-      : null;
     return json(res, 200, { summary, balance });
   }
 
@@ -168,7 +157,12 @@ export async function handleRequest(
       const adaptedArgs = adaptArgs(name, args ?? {});
       const outcome = await executeTool(registry, { name, args: adaptedArgs }, ctx);
       if (outcome.ok) {
-        const value = adaptResult(name, outcome.value);
+        // get_wallet_balance needs async token enrichment (tokens[] + total_usd) that a
+        // pure result adapter can't do — assemble the web shape from the chain client.
+        const value =
+          name === "get_wallet_balance"
+            ? await assembleWalletBalance(ctx.chain).catch(() => outcome.value)
+            : adaptResult(name, outcome.value);
         return json(res, 200, { ok: toolOk(value), result: value });
       }
       const blocked = outcome.error.kind === "safety_blocked";

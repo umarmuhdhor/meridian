@@ -33,6 +33,8 @@ import { createMeteoraPoolDiscovery } from "../adapters/market/meteora-pool-disc
 import { createJupiterTokenInfo } from "../adapters/market/jupiter-token-info.js";
 import { createRugcheckAdapter } from "../adapters/market/rugcheck.js";
 import { createMeteoraSmartWalletChecker } from "../adapters/market/meteora-smart-wallet-checker.js";
+import { createAgentMeridianStudy } from "../adapters/market/agent-meridian-study.js";
+import { createFakeStudy } from "../adapters/market/fake-study.js";
 import type { PoolDiscoveryClient } from "../ports/pool-discovery.js";
 import type { TokenInfoClient } from "../ports/token-info-client.js";
 import type { RugCheckClient } from "../ports/rug-check.js";
@@ -80,6 +82,8 @@ import { addSmartWalletTool } from "../app/tools/impls/add-smart-wallet.js";
 import { removeSmartWalletTool } from "../app/tools/impls/remove-smart-wallet.js";
 import { blockDeployerTool } from "../app/tools/impls/block-deployer.js";
 import { unblockDeployerTool } from "../app/tools/impls/unblock-deployer.js";
+import { getTopLpersTool } from "../app/tools/impls/get-top-lpers.js";
+import { studyTopLpersTool } from "../app/tools/impls/study-top-lpers.js";
 import type { AppContext } from "../app/tools/context.js";
 import type { LLMClient } from "../ports/llm-client.js";
 import type { AppConfig } from "../domain/schemas/config.js";
@@ -144,6 +148,8 @@ const ALL_TOOLS = [
   removeSmartWalletTool,
   blockDeployerTool,
   unblockDeployerTool,
+  getTopLpersTool,
+  studyTopLpersTool,
 ];
 
 interface BootResult {
@@ -333,11 +339,20 @@ async function boot(): Promise<BootResult> {
           tokenInfo,
         })
       : createFakeSmartWalletChecker();
+  const study =
+    marketMode === "real"
+      ? createAgentMeridianStudy({
+          logger,
+          baseUrl: cfg.value.api.url,
+          ...(cfg.value.api.publicApiKey ? { apiKey: cfg.value.api.publicApiKey } : {}),
+        })
+      : createFakeStudy();
   const market = {
     pools,
     tokenInfo,
     rugCheck,
     smartWalletChecker,
+    study,
   };
   logger.info("boot", `market: ${marketMode}`);
 

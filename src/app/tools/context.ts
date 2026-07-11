@@ -15,6 +15,7 @@ import type { PoolDiscoveryClient } from "../../ports/pool-discovery.js";
 import type { TokenInfoClient } from "../../ports/token-info-client.js";
 import type { RugCheckClient } from "../../ports/rug-check.js";
 import type { SmartWalletChecker } from "../../ports/smart-wallet-checker.js";
+import type { StudyClient } from "../../ports/study-client.js";
 import type { AppConfig } from "../../domain/schemas/config.js";
 
 /**
@@ -35,6 +36,7 @@ export interface AppContext {
     tokenInfo: TokenInfoClient;
     rugCheck: RugCheckClient;
     smartWalletChecker: SmartWalletChecker;
+    study: StudyClient;
   };
   repos: {
     positions: PositionRepo;
