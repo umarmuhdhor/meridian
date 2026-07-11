@@ -364,6 +364,31 @@ async function main(): Promise<void> {
   const registry = createRegistry(ALL_TOOLS);
   const model = process.env.LLM_MODEL ?? "demo/fake-v1";
 
+  // ── Dashboard bridge (env-gated; the ONLY dashboard touch-point in core) ──
+  // Without DASHBOARD_ENABLED=true the bridge module is never even imported, so daemon
+  // behavior is byte-for-byte identical. Placed before the autonomous/one-shot split so
+  // the bridge is available in both modes. Startup failure MUST NOT stop the daemon.
+  let dashboardBridge: { close: () => Promise<void> } | null = null;
+  if (process.env.DASHBOARD_ENABLED === "true") {
+    try {
+      const { startBridge } = await import("../adapters/dashboard/server.js");
+      dashboardBridge = startBridge({
+        port: Number(process.env.DASHBOARD_PORT ?? 8787),
+        token: process.env.DASHBOARD_TOKEN,
+        ctx,
+        llm,
+        registry,
+        model,
+        stateDir: STATE_DIR,
+      });
+    } catch (e) {
+      ctx.logger.warn(
+        "dashboard",
+        `Bridge failed to start: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   if (process.env.MERIDIAN_AUTONOMOUS === "true") {
     console.log(`\n──── AUTONOMOUS mode ────`);
     const scheduler = createIntervalScheduler(ctx.logger);
@@ -446,6 +471,7 @@ async function main(): Promise<void> {
       pollerHandle.stop();
       shutdownHive();
       shutdownInbound();
+      if (dashboardBridge) void dashboardBridge.close();
       scheduler.cancelAll();
       process.exit(0);
     };

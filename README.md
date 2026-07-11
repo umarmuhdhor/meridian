@@ -102,6 +102,9 @@ npm start                                      # boot the daemon
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | | Enables Telegram outbound + inbound |
 | `TELEGRAM_ALLOWED_USER_IDS` | comma list | Required for group chats |
 | `OPENROUTER_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | | LLM provider config |
+| `DASHBOARD_ENABLED` | `true` / unset | Start the localhost control-dashboard bridge. Without it the bridge module is never imported — daemon behavior is identical. |
+| `DASHBOARD_PORT` | port (default `8787`) | Bridge TCP port (bound to `127.0.0.1` only) |
+| `DASHBOARD_TOKEN` | secret | **Required** to arm the bridge — it refuses to listen without a non-empty token. The web app sends it as `Bearer`. |
 
 ### Modes
 
@@ -124,6 +127,35 @@ MERIDIAN_AUTONOMOUS=true \
   TELEGRAM_CHAT_ID="…" \
   npm start
 ```
+
+---
+
+## Control dashboard
+
+An optional web dashboard lives under `dashboard/`:
+
+- `dashboard/web/` — Next.js app (its own npm project). Talks only to same-origin
+  `/api/*` proxies, which forward to the bridge with the `Bearer` token server-side —
+  the token never reaches the browser.
+- `src/adapters/dashboard/` — the **bridge**: a `node:http` server (zero external deps,
+  bound to `127.0.0.1` only) wired to the daemon's DI context. Exposes `/health`,
+  `/state/positions`, `/state/summary`, `/state/file/:name` (whitelisted, `user-config`
+  redacted), `/events` (SSE, piggybacks the PnL-poller cache — no new RPC), `POST /tool`
+  (allowlisted; write tools require `confirm:true` + an in-flight lock), and `POST /chat`
+  (streaming GENERAL agent tick restricted to a read-only tool surface).
+
+Enable it at boot:
+
+```bash
+DASHBOARD_ENABLED=true \
+  DASHBOARD_TOKEN="$(openssl rand -hex 16)" \
+  MERIDIAN_AUTONOMOUS=true \
+  npm start
+
+# then, in dashboard/web:  BRIDGE_TOKEN=<same token> npm run dev
+```
+
+See `dashboard/PRD.md`, `dashboard/Design.md`, and `dashboard/plan/` for the full spec.
 
 ---
 

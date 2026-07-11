@@ -1,0 +1,190 @@
+@import "tailwindcss";
+
+/* Class-based dark mode (we force .dark on <html>; light is secondary). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Raw palette. :root = light (secondary), .dark = default. (Design §16.2) ── */
+@layer base {
+  :root {
+    --bg: #f6f7f9;
+    --surface-1: #ffffff;
+    --surface-2: #eff1f5;
+    --surface-3: #ffffff;
+    --border: #e3e7ed;
+    --border-strong: #cdd3dd;
+    --text-primary: #12151c;
+    --text-secondary: #535b6b;
+    --text-tertiary: #828a99;
+    --text-disabled: #aeb4c0;
+
+    --accent: #1a6fc9;
+    --accent-hover: #155faf;
+    --accent-bright: #1a6fc9;
+    --accent-fg: #ffffff;
+    --accent-tint: rgba(26, 111, 201, 0.1);
+
+    --profit: #0e9f6a; --profit-fill: #12a66e; --profit-tint: rgba(18, 166, 110, 0.12);
+    --loss: #d93a48;   --loss-fill: #e23d4c;   --loss-tint: rgba(217, 58, 72, 0.12);
+    --warning: #9a6100;--warning-fill: #e19b15;--warning-tint: rgba(225, 155, 21, 0.12);
+    --danger: #d93a48; --danger-fill: #e23d4c; --danger-tint: rgba(226, 61, 76, 0.14);
+
+    --chart-1: #2f8fe6; --chart-2: #33d69f; --chart-3: #f5b942;
+    --chart-4: #ff6b6b; --chart-5: #9b8cff; --chart-6: #4ec8c4;
+
+    --shadow-sm: 0 1px 2px rgba(16, 20, 30, 0.06);
+    --shadow-md: 0 4px 12px rgba(16, 20, 30, 0.08);
+    --shadow-lg: 0 12px 32px rgba(16, 20, 30, 0.12);
+  }
+
+  .dark {
+    --bg: #0a0c10;
+    --surface-1: #101319;
+    --surface-2: #161a22;
+    --surface-3: #1c212b;
+    --border: #232935;
+    --border-strong: #2e3644;
+    --text-primary: #e6e9ef;
+    --text-secondary: #a5adbd;
+    --text-tertiary: #6b7385;
+    --text-disabled: #4a5163;
+
+    --accent: #2f8fe6;
+    --accent-hover: #4098ee;
+    --accent-bright: #4fa9ff;
+    --accent-fg: #ffffff;
+    --accent-tint: rgba(47, 143, 230, 0.12);
+
+    --profit: #33d69f; --profit-fill: #12a66e; --profit-tint: rgba(51, 214, 159, 0.12);
+    --loss: #ff6b6b;   --loss-fill: #e23d4c;   --loss-tint: rgba(255, 107, 107, 0.12);
+    --warning: #f5b942;--warning-fill: #e19b15;--warning-tint: rgba(245, 185, 66, 0.12);
+    --danger: #ff6b6b; --danger-fill: #e23d4c; --danger-tint: rgba(226, 61, 76, 0.14);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
+  }
+}
+
+/* ── Expose tokens as Tailwind utilities (bg-surface-1, text-profit, …). ──
+   `inline` so utilities reference the live var → dark/light flips automatically. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-disabled: var(--text-disabled);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-bright: var(--accent-bright);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-tint: var(--accent-tint);
+
+  --color-profit: var(--profit);
+  --color-profit-tint: var(--profit-tint);
+  --color-loss: var(--loss);
+  --color-loss-tint: var(--loss-tint);
+  --color-warning: var(--warning);
+  --color-warning-tint: var(--warning-tint);
+  --color-danger: var(--danger);
+  --color-danger-fill: var(--danger-fill);
+  --color-danger-tint: var(--danger-tint);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+/* ── Base element styles ── */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    background: var(--bg);
+  }
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Visible focus ring on every interactive element (Design §14). */
+  :focus-visible {
+    outline: 2px solid var(--accent-bright);
+    outline-offset: 2px;
+  }
+}
+
+/* Tabular figures wherever .tnum is applied (Design §5). */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ── Functional motion only (Design §8). All honor prefers-reduced-motion. ── */
+@keyframes mrd-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@keyframes mrd-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes mrd-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes mrd-flash-up {
+  0% { background-color: var(--profit-tint); }
+  100% { background-color: transparent; }
+}
+@keyframes mrd-flash-down {
+  0% { background-color: var(--loss-tint); }
+  100% { background-color: transparent; }
+}
+
+.mrd-pulse { animation: mrd-pulse 2s ease-in-out infinite; }
+.mrd-spin { animation: mrd-spin 0.8s linear infinite; }
+.mrd-flash-up { animation: mrd-flash-up 600ms ease-out; }
+.mrd-flash-down { animation: mrd-flash-down 600ms ease-out; }
+
+.mrd-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 37%,
+    var(--surface-2) 63%
+  );
+  background-size: 200% 100%;
+  animation: mrd-shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mrd-pulse,
+  .mrd-spin,
+  .mrd-flash-up,
+  .mrd-flash-down,
+  .mrd-skeleton {
+    animation: none;
+  }
+  .mrd-skeleton {
+    background: var(--surface-2);
+  }
+}
