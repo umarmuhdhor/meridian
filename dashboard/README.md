@@ -3,16 +3,18 @@
 A thin, additive web dashboard to monitor and control the Meridian DLMM agent —
 **without changing any trading logic**. Two processes:
 
-1. **Bridge** (`dashboard/bridge/`) — a zero-dependency HTTP server that runs
-   *inside* the daemon, gated by env. It exposes read state + a `POST /tool`
+1. **Bridge** (`src/adapters/dashboard/`) — a zero-dependency `node:http` server
+   that runs *inside* the daemon, gated by env. It exposes read state + a `POST /tool`
    endpoint that funnels every write through the daemon's existing `executeTool`
    (so audit, Telegram notifications, auto-swap, and safety checks all still fire).
+   It is wired to the daemon's DI context (`ctx`, `registry`, `llm`) rather than
+   module singletons.
 2. **Web** (`dashboard/web/`) — a Next.js 15 app (its own `package.json`). API
    routes proxy the bridge so the token never reaches the browser.
 
-The only touch to core code is a single env-gated boot block in `index.js`.
-With `DASHBOARD_ENABLED` unset, no dashboard code is ever loaded and daemon
-behavior is byte-for-byte identical.
+The only touch to core code is a single env-gated boot block in
+`src/entrypoints/daemon.ts`. With `DASHBOARD_ENABLED` unset, the bridge module is
+never even imported and daemon behavior is byte-for-byte identical.
 
 ---
 
@@ -21,8 +23,8 @@ behavior is byte-for-byte identical.
 ### 1. Daemon with the bridge enabled (terminal 1)
 
 ```bash
-# From the repo root. Use DRY_RUN=true to test without on-chain transactions.
-DASHBOARD_ENABLED=true DASHBOARD_PORT=8787 DASHBOARD_TOKEN=<secret> node index.js
+# From the repo root. Build first (npm run build), or use `npm run dev` (DRY_RUN).
+DASHBOARD_ENABLED=true DASHBOARD_PORT=8787 DASHBOARD_TOKEN=<secret> npm start
 ```
 
 The daemon logs `bridge on 127.0.0.1:8787` on success. If `DASHBOARD_TOKEN` is

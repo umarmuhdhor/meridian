@@ -1,0 +1,135 @@
+import { describe, it, expect } from "vitest";
+import { runScreeningCycle } from "../../src/app/screening/cycle.js";
+import { createRegistry } from "../../src/app/tools/registry.js";
+import { createFakeLLM } from "../../src/adapters/llm/fake.js";
+import { createFakePoolDiscovery } from "../../src/adapters/market/fake-pool-discovery.js";
+import { createDryRunChainClient } from "../../src/adapters/chain/dry-run.js";
+import { fixedClock } from "../../src/ports/clock.js";
+import { getTopCandidatesTool } from "../../src/app/tools/impls/get-top-candidates.js";
+import { getWalletBalanceTool } from "../../src/app/tools/impls/get-wallet-balance.js";
+import { getMyPositionsTool } from "../../src/app/tools/impls/get-my-positions.js";
+import { assertPoolDeployableTool } from "../../src/app/tools/impls/assert-pool-deployable.js";
+import { deployPositionTool } from "../../src/app/tools/impls/deploy-position.js";
+import type { CandidatePool } from "../../src/domain/schemas/market.js";
+import type { OnChainPosition } from "../../src/domain/schemas/chain.js";
+import { makeCtx } from "./tool-context.js";
+
+function pool(over: Partial<CandidatePool> = {}): CandidatePool {
+  return {
+    pool_address: "goodPool",
+    name: "GOOD/SOL",
+    base_mint: "MINT_G",
+    quote_mint: "So11111111111111111111111111111111111111112",
+    tvl: 50_000,
+    active_tvl: 40_000,
+    volume_window: 20_000,
+    fee_active_tvl_ratio: 0.12,
+    fee_tvl_ratio: 0.1,
+    organic_score: 80,
+    holders: 1500,
+    mcap: 500_000,
+    bin_step: 100,
+    volatility: 0.05,
+    launchpad: null,
+    token_age_hours: 24,
+    active_pct: 60,
+    ...over,
+  };
+}
+
+const REGISTRY = createRegistry([
+  getTopCandidatesTool,
+  getWalletBalanceTool,
+  getMyPositionsTool,
+  assertPoolDeployableTool,
+  deployPositionTool,
+]);
+
+const CLOCK = fixedClock("2026-07-05T12:00:00.000Z");
+
+describe("runScreeningCycle", () => {
+  it("skips at max positions with decision log entry", async () => {
+    // Seed chain with 3 positions (config.risk.maxPositions = 3)
+    const positions: OnChainPosition[] = Array.from({ length: 3 }, (_, i) => ({
+      position: `p${i}`,
+      pool: `pool${i}`,
+      pair: `p${i}/SOL`,
+      base_mint: `M${i}`,
+      lower_bin: 0,
+      upper_bin: 10,
+      active_bin: 5,
+      in_range: true,
+      unclaimed_fees_usd: 0,
+      pnl_pct: 0,
+      pnl_pct_suspicious: false,
+    }));
+    const chain = createDryRunChainClient({ clock: CLOCK, seed: { walletSol: 5, positions } });
+    const ctx = makeCtx({ chain });
+    const llm = createFakeLLM({ script: [] });
+    const outcome = await runScreeningCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    expect(outcome.kind).toBe("skipped");
+    if (outcome.kind === "skipped") expect(outcome.reason).toContain("max positions");
+    const ds = await ctx.repos.decisions.recent(1);
+    expect(ds[0]?.type).toBe("skip");
+  });
+
+  it("skips on insufficient SOL", async () => {
+    const chain = createDryRunChainClient({ clock: CLOCK, seed: { walletSol: 0.3 } });
+    const ctx = makeCtx({ chain });
+    const llm = createFakeLLM({ script: [] });
+    const outcome = await runScreeningCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    expect(outcome.kind).toBe("skipped");
+    if (outcome.kind === "skipped") expect(outcome.reason).toContain("insufficient SOL");
+  });
+
+  it("no_deploy when 0 candidates pass", async () => {
+    const pools = createFakePoolDiscovery({ seed: [pool({ tvl: 100 })] });
+    const chain = createDryRunChainClient({ clock: CLOCK, seed: { walletSol: 5 } });
+    const ctx = makeCtx({ chain, market: { pools } });
+    const llm = createFakeLLM({ script: [] });
+    const outcome = await runScreeningCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    expect(outcome.kind).toBe("no_deploy");
+    if (outcome.kind === "no_deploy") {
+      expect(outcome.picked).toBe(0);
+      expect(outcome.rejection_summary[0]).toContain("tvl_out_of_range");
+    }
+    const ds = await ctx.repos.decisions.recent(1);
+    expect(ds[0]?.type).toBe("no_deploy");
+  });
+
+  it("invokes agent when candidates pass", async () => {
+    const pools = createFakePoolDiscovery({ seed: [pool()] });
+    const chain = createDryRunChainClient({ clock: CLOCK, seed: { walletSol: 5 } });
+    const ctx = makeCtx({ chain, market: { pools } });
+    const llm = createFakeLLM({
+      script: [
+        {
+          kind: "tool_calls",
+          calls: [{
+            name: "deploy_position",
+            args: {
+              pool_address: "goodPool",
+              amount_sol: 0.5,
+              strategy: "bid_ask",
+              bins_below: 40,
+              bins_above: 10,
+              base_mint: "MINT_G",
+            },
+          }],
+        },
+        { kind: "assistant", text: "deployed" },
+      ],
+    });
+    const outcome = await runScreeningCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    expect(outcome.kind).toBe("invoked");
+    if (outcome.kind === "invoked") {
+      expect(outcome.picked).toBe(1);
+      expect(outcome.agent.finishReason).toBe("stop");
+      const deployCall = outcome.agent.toolCalls.find((t) => t.name === "deploy_position");
+      expect(deployCall?.ok).toBe(true);
+    }
+    // Decision log received deploy entry via post-hook
+    const ds = await ctx.repos.decisions.recent(1);
+    expect(ds[0]?.type).toBe("deploy");
+  });
+});

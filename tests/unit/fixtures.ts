@@ -1,0 +1,75 @@
+import type { ManagementConfig } from "../../src/domain/schemas/config.js";
+import type { LivePositionSnapshot, TrackedPosition } from "../../src/domain/schemas/position.js";
+
+export const mgmt: ManagementConfig = {
+  stopLossPct: -50,
+  takeProfitPct: 5,
+  outOfRangeBinsToClose: 10,
+  outOfRangeWaitMinutes: 30,
+  oorCooldownTriggerCount: 3,
+  oorCooldownHours: 12,
+  minFeePerTvl24h: 7,
+  minAgeBeforeYieldCheck: 60,
+  minClaimAmount: 5,
+  trailingTakeProfit: true,
+  trailingTriggerPct: 3,
+  trailingDropPct: 1.5,
+  deployAmountSol: 0.5,
+  gasReserve: 0.2,
+  positionSizePct: 0.35,
+  minSolToOpen: 0.55,
+  pnlSanityMaxDiffPct: 5,
+  solMode: false,
+  repeatDeployCooldownEnabled: true,
+  repeatDeployCooldownTriggerCount: 3,
+  repeatDeployCooldownHours: 12,
+  repeatDeployCooldownScope: "token",
+  repeatDeployCooldownMinFeeEarnedPct: 1.5,
+};
+
+export function makeLive(overrides: Partial<LivePositionSnapshot> = {}): LivePositionSnapshot {
+  return {
+    position: "posA",
+    pnl_pct: 0,
+    pnl_pct_suspicious: false,
+    total_value_usd: 100,
+    in_range: true,
+    active_bin: 100,
+    upper_bin: 110,
+    lower_bin: 90,
+    minutes_out_of_range: 0,
+    fee_per_tvl_24h: 10,
+    age_minutes: 120,
+    ...overrides,
+  };
+}
+
+export function makeTracked(overrides: Partial<TrackedPosition> = {}): TrackedPosition {
+  return {
+    position: "posA",
+    pool: "poolA",
+    pool_name: "TKN/SOL",
+    strategy: "bid_ask",
+    bin_range: { lower_bin: 90, upper_bin: 110 },
+    amount_sol: 0.5,
+    amount_x: 0,
+    active_bin_at_deploy: 100,
+    bin_step: 100,
+    volatility: 0.05,
+    fee_tvl_ratio: 5,
+    initial_fee_tvl_24h: 5,
+    organic_score: 70,
+    initial_value_usd: 100,
+    deployed_at: "2026-07-01T00:00:00.000Z",
+    out_of_range_since: null,
+    last_claim_at: null,
+    total_fees_claimed_usd: 0,
+    rebalance_count: 0,
+    closed: false,
+    closed_at: null,
+    notes: [],
+    peak_pnl_pct: 0,
+    trailing_active: false,
+    ...overrides,
+  };
+}
