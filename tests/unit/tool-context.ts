@@ -182,6 +182,29 @@ export function memSmartWalletRepo(): SmartWalletRepo {
   };
 }
 
+export function memDevBlocklistRepo(): import("../../src/ports/dev-blocklist-repo.js").DevBlocklistRepo {
+  const bl: Record<string, import("../../src/domain/schemas/dev-blocklist.js").DevBlocklistEntry> = {};
+  return {
+    async load() {
+      return { ok: true, value: bl };
+    },
+    async isBlocked(wallet) {
+      return Object.prototype.hasOwnProperty.call(bl, wallet);
+    },
+    async add(wallet, entry) {
+      bl[wallet] = entry;
+    },
+    async remove(wallet) {
+      if (!Object.prototype.hasOwnProperty.call(bl, wallet)) return false;
+      delete bl[wallet];
+      return true;
+    },
+    async list() {
+      return Object.entries(bl).map(([wallet, entry]) => ({ wallet, entry }));
+    },
+  };
+}
+
 export function memTokenBlacklistRepo(): TokenBlacklistRepo {
   const bl: Record<string, import("../../src/domain/schemas/blacklist.js").BlacklistEntry> = {};
   return {
@@ -225,6 +248,7 @@ export interface CtxOverrides {
   clock?: AppContext["clock"];
   logger?: AppContext["logger"];
   config?: AppConfig;
+  configPath?: string;
   chain?: ChainClient;
   swap?: SwapClient;
   notifier?: AppContext["notifier"];
@@ -246,6 +270,7 @@ export function makeCtx(over: CtxOverrides = {}): AppContext {
     strategies: over.repos?.strategies ?? memStrategyRepo(),
     smartWallets: over.repos?.smartWallets ?? memSmartWalletRepo(),
     tokenBlacklist: over.repos?.tokenBlacklist ?? memTokenBlacklistRepo(),
+    devBlocklist: over.repos?.devBlocklist ?? memDevBlocklistRepo(),
   };
   const market: AppContext["market"] = {
     pools: over.market?.pools ?? createFakePoolDiscovery({ seed: [] }),
@@ -257,6 +282,7 @@ export function makeCtx(over: CtxOverrides = {}): AppContext {
     clock,
     logger,
     config: over.config ?? cfg,
+    configPath: over.configPath ?? "/tmp/meridian-test-user-config.json",
     chain,
     swap,
     notifier,

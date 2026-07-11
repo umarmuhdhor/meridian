@@ -6,6 +6,7 @@ import { createRegistry } from "../../src/app/tools/registry.js";
 import { getWalletBalanceTool } from "../../src/app/tools/impls/get-wallet-balance.js";
 import { getMyPositionsTool } from "../../src/app/tools/impls/get-my-positions.js";
 import { closePositionTool } from "../../src/app/tools/impls/close-position.js";
+import { addLessonTool } from "../../src/app/tools/impls/add-lesson.js";
 import { createFakeLLM } from "../../src/adapters/llm/fake.js";
 import { makeCtx } from "../unit/tool-context.js";
 import { mkTmpDir, rmDir } from "./tmpdir.js";
@@ -41,7 +42,7 @@ describe("dashboard bridge", () => {
       "utf8",
     );
     const ctx = makeCtx();
-    const registry = createRegistry([getWalletBalanceTool, getMyPositionsTool, closePositionTool]);
+    const registry = createRegistry([getWalletBalanceTool, getMyPositionsTool, closePositionTool, addLessonTool]);
     const llm = createFakeLLM({ script: [], model: "demo/fake-v1" });
     handle = startBridge({
       port: PORT,
@@ -125,6 +126,21 @@ describe("dashboard bridge", () => {
     const body = (await r.json()) as { ok: boolean; result: Record<string, unknown> };
     expect(body.ok).toBe(true);
     expect(typeof body.result.sol).toBe("number");
+  });
+
+  it("POST /tool adapts get_wallet_balance to the web shape (total_usd + tokens)", async () => {
+    const r = await post("/tool", { name: "get_wallet_balance", args: {} }, auth);
+    const body = (await r.json()) as { result: Record<string, unknown> };
+    expect(typeof body.result.total_usd).toBe("number");
+    expect(Array.isArray(body.result.tokens)).toBe(true);
+  });
+
+  it("POST /tool runs an allowlisted write tool with confirm (add_lesson)", async () => {
+    const r = await post("/tool", { name: "add_lesson", args: { rule: "AVOID rugs" }, confirm: true }, auth);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { ok: boolean; result: { id: string } };
+    expect(body.ok).toBe(true);
+    expect(typeof body.result.id).toBe("string");
   });
 
   it("POST /tool denies tools outside the allowlist (self_update)", async () => {

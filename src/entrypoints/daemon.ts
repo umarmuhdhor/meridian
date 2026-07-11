@@ -9,6 +9,7 @@ import { createJsonDecisionLog } from "../adapters/persistence/json/decision-log
 import { createJsonStrategyRepo } from "../adapters/persistence/json/strategy-repo.js";
 import { createJsonSmartWalletRepo } from "../adapters/persistence/json/smart-wallet-repo.js";
 import { createJsonTokenBlacklistRepo } from "../adapters/persistence/json/token-blacklist-repo.js";
+import { createJsonDevBlocklistRepo } from "../adapters/persistence/json/dev-blocklist-repo.js";
 import { createDryRunChainClient } from "../adapters/chain/dry-run.js";
 import { createMeteoraChainClient } from "../adapters/chain/meteora/client.js";
 import { createSolanaConnection, loadWalletKeypair } from "../adapters/chain/meteora/connection.js";
@@ -57,6 +58,28 @@ import { getTokenHoldersTool } from "../app/tools/impls/get-token-holders.js";
 import { getTokenNarrativeTool } from "../app/tools/impls/get-token-narrative.js";
 import { checkSmartWalletsOnPoolTool } from "../app/tools/impls/check-smart-wallets-on-pool.js";
 import { getTopCandidatesTool } from "../app/tools/impls/get-top-candidates.js";
+import { getPositionPnlTool } from "../app/tools/impls/get-position-pnl.js";
+import { getWalletPositionsTool } from "../app/tools/impls/get-wallet-positions.js";
+import { getPoolDetailTool } from "../app/tools/impls/get-pool-detail.js";
+import { getPerformanceHistoryTool } from "../app/tools/impls/get-performance-history.js";
+import { listLessonsTool } from "../app/tools/impls/list-lessons.js";
+import { listStrategiesTool } from "../app/tools/impls/list-strategies.js";
+import { listBlockedDeployersTool } from "../app/tools/impls/list-blocked-deployers.js";
+import { discoverPoolsTool } from "../app/tools/impls/discover-pools.js";
+import { setPositionNoteTool } from "../app/tools/impls/set-position-note.js";
+import { addLessonTool } from "../app/tools/impls/add-lesson.js";
+import { pinLessonTool } from "../app/tools/impls/pin-lesson.js";
+import { unpinLessonTool } from "../app/tools/impls/unpin-lesson.js";
+import { clearLessonsTool } from "../app/tools/impls/clear-lessons.js";
+import { addStrategyTool } from "../app/tools/impls/add-strategy.js";
+import { removeStrategyTool } from "../app/tools/impls/remove-strategy.js";
+import { setActiveStrategyTool } from "../app/tools/impls/set-active-strategy.js";
+import { updateConfigTool } from "../app/tools/impls/update-config.js";
+import { removeFromBlacklistTool } from "../app/tools/impls/remove-from-blacklist.js";
+import { addSmartWalletTool } from "../app/tools/impls/add-smart-wallet.js";
+import { removeSmartWalletTool } from "../app/tools/impls/remove-smart-wallet.js";
+import { blockDeployerTool } from "../app/tools/impls/block-deployer.js";
+import { unblockDeployerTool } from "../app/tools/impls/unblock-deployer.js";
 import type { AppContext } from "../app/tools/context.js";
 import type { LLMClient } from "../ports/llm-client.js";
 import type { AppConfig } from "../domain/schemas/config.js";
@@ -97,6 +120,30 @@ const ALL_TOOLS = [
   getTokenNarrativeTool,
   checkSmartWalletsOnPoolTool,
   getTopCandidatesTool,
+  // Dashboard control surface — read tools
+  getPositionPnlTool,
+  getWalletPositionsTool,
+  getPoolDetailTool,
+  getPerformanceHistoryTool,
+  listLessonsTool,
+  listStrategiesTool,
+  listBlockedDeployersTool,
+  discoverPoolsTool,
+  // Dashboard control surface — write tools
+  setPositionNoteTool,
+  addLessonTool,
+  pinLessonTool,
+  unpinLessonTool,
+  clearLessonsTool,
+  addStrategyTool,
+  removeStrategyTool,
+  setActiveStrategyTool,
+  updateConfigTool,
+  removeFromBlacklistTool,
+  addSmartWalletTool,
+  removeSmartWalletTool,
+  blockDeployerTool,
+  unblockDeployerTool,
 ];
 
 interface BootResult {
@@ -135,6 +182,7 @@ async function boot(): Promise<BootResult> {
   const strategies = createJsonStrategyRepo({ filePath: path.join(STATE_DIR, "strategy-library.json"), logger });
   const smartWallets = createJsonSmartWalletRepo({ filePath: path.join(STATE_DIR, "smart-wallets.json"), logger });
   const tokenBlacklist = createJsonTokenBlacklistRepo({ filePath: path.join(STATE_DIR, "token-blacklist.json"), logger });
+  const devBlocklist = createJsonDevBlocklistRepo({ filePath: path.join(STATE_DIR, "dev-blocklist.json"), logger });
 
   const chainMode = (process.env.MERIDIAN_CHAIN ?? "dryrun").toLowerCase();
   const priceMode = (
@@ -297,11 +345,12 @@ async function boot(): Promise<BootResult> {
     clock,
     logger,
     config: cfg.value,
+    configPath: primaryConfigPath,
     chain,
     swap,
     notifier,
     market,
-    repos: { positions, poolMemory, lessons, decisions, strategies, smartWallets, tokenBlacklist },
+    repos: { positions, poolMemory, lessons, decisions, strategies, smartWallets, tokenBlacklist, devBlocklist },
   };
 
   const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.LLM_API_KEY;

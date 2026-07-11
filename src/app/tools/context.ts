@@ -7,6 +7,7 @@ import type { DecisionLogRepo } from "../../ports/decision-log.js";
 import type { StrategyRepo } from "../../ports/strategy-repo.js";
 import type { SmartWalletRepo } from "../../ports/smart-wallet-repo.js";
 import type { TokenBlacklistRepo } from "../../ports/token-blacklist-repo.js";
+import type { DevBlocklistRepo } from "../../ports/dev-blocklist-repo.js";
 import type { ChainClient } from "../../ports/chain-client.js";
 import type { SwapClient } from "../../ports/swap-client.js";
 import type { Notifier } from "../../ports/notifier.js";
@@ -24,6 +25,8 @@ export interface AppContext {
   clock: Clock;
   logger: Logger;
   config: AppConfig;
+  /** Absolute path to the flat user-config.json — used by update_config to persist + reload. */
+  configPath: string;
   chain: ChainClient;
   swap: SwapClient;
   notifier: Notifier;
@@ -41,5 +44,6 @@ export interface AppContext {
     strategies: StrategyRepo;
     smartWallets: SmartWalletRepo;
     tokenBlacklist: TokenBlacklistRepo;
+    devBlocklist: DevBlocklistRepo;
   };
 }

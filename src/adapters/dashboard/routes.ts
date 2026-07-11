@@ -17,6 +17,7 @@ import { buildStateSummary } from "./state-summary.js";
 import { isAllowedTool, isWriteTool, resolveFile, CHAT_READ_TOOLS } from "./allowlist.js";
 import { acquire, release } from "./inflight.js";
 import { redactSecrets } from "./redact.js";
+import { adaptArgs, adaptResult } from "./tool-adapters.js";
 
 export type BridgeRouteDeps = BridgeDeps & { sse: SseHub };
 
@@ -164,9 +165,11 @@ export async function handleRequest(
 
     try {
       if (write) log.info("dashboard", `tool=${name}`); // one line only; executeTool audits internally
-      const outcome = await executeTool(registry, { name, args: args ?? {} }, ctx);
+      const adaptedArgs = adaptArgs(name, args ?? {});
+      const outcome = await executeTool(registry, { name, args: adaptedArgs }, ctx);
       if (outcome.ok) {
-        return json(res, 200, { ok: toolOk(outcome.value), result: outcome.value });
+        const value = adaptResult(name, outcome.value);
+        return json(res, 200, { ok: toolOk(value), result: value });
       }
       const blocked = outcome.error.kind === "safety_blocked";
       return json(res, 200, {
