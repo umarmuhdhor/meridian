@@ -1,11 +1,20 @@
 # Meridian — standalone VPS deploy (Hong Kong). LIVE config.
 #
-# Public access: cloudflared (below) runs a Cloudflare Tunnel and reaches the
-# dashboard by service name at http://meridian:3000 over the shared `mnet`
-# network — no inbound ports opened on the host. The 127.0.0.1:3000 bind is
-# kept only for SSH-tunnel admin. The dashboard itself is PIN-gated (Next.js
-# middleware) and sits behind Cloudflare Access; the daemon bridge (:8787)
-# stays container-internal and is never exposed.
+# Split into two containers so the dashboard can redeploy WITHOUT restarting the
+# trading daemon (zero-downtime web deploys):
+#
+#   meridian      = the trading daemon. Owns the network namespace + the bridge
+#                   on 127.0.0.1:8787 + the state volume. Restarts only when
+#                   daemon/core code changes.
+#   meridian-web  = the Next.js dashboard. Shares the daemon's netns
+#                   (network_mode: service:meridian) so it can reach the
+#                   localhost-only bridge. Recreated on every web change; the
+#                   daemon keeps trading.
+#   cloudflared   = Cloudflare Tunnel → http://meridian:3000 (the web listens
+#                   there, inside the shared namespace). Behind CF Access + PIN.
+#
+# Both app containers run the SAME image, selecting one PM2 app via --only.
+# Image comes from GHCR in CI-driven deploys; `build: .` covers local builds.
 networks:
   mnet:
     driver: bridge
@@ -13,9 +22,10 @@ networks:
 services:
   meridian:
     build: .
-    image: meridian
+    image: ghcr.io/umarmuhdhor/meridian:dashboard
     container_name: meridian
     restart: unless-stopped
+    command: ["pm2-runtime", "ecosystem.config.cjs", "--only", "meridian"]
     env_file: .env
     environment:
       - MERIDIAN_STATE_DIR=/opt/data
@@ -23,7 +33,6 @@ services:
       - DASHBOARD_ENABLED=true
       - MERIDIAN_AUTONOMOUS=true
       - NODE_ENV=production
-      # Real adapters (meteora cascades price=jupiter, market=real):
       - MERIDIAN_CHAIN=meteora
       - MERIDIAN_MARKET=real
       - MERIDIAN_PRICE=jupiter
@@ -31,8 +40,26 @@ services:
       - /home/ubuntu/meridian-data:/opt/data
       - /home/ubuntu/meridian/user-config.json:/app/user-config.json
     ports:
+      # Loopback-only, for SSH-tunnel admin. Public access is via cloudflared.
       - "127.0.0.1:3000:3000"
     networks: [mnet]
+
+  meridian-web:
+    image: ghcr.io/umarmuhdhor/meridian:dashboard
+    container_name: meridian-web
+    restart: unless-stopped
+    command: ["pm2-runtime", "ecosystem.config.cjs", "--only", "meridian-web"]
+    env_file: .env
+    environment:
+      - MERIDIAN_ROOT=/opt/data
+      - NODE_ENV=production
+    volumes:
+      - /home/ubuntu/meridian-data:/opt/data
+    # Share the daemon's network namespace so the dashboard reaches the
+    # localhost-only bridge (127.0.0.1:8787) and listens on :3000 there.
+    network_mode: "service:meridian"
+    depends_on:
+      - meridian
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -40,9 +67,6 @@ services:
     restart: unless-stopped
     command: tunnel --no-autoupdate run
     environment:
-      # Set CLOUDFLARE_TUNNEL_TOKEN in ~/meridian/.env after creating the
-      # tunnel in the Cloudflare Zero Trust dashboard. Public hostname
-      # calisto.nafidinara.com → http://meridian:3000 (configured CF-side).
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
       - meridian

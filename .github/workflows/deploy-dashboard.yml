@@ -1,0 +1,117 @@
+name: deploy-dashboard
+
+# Auto-deploy on every push to `dashboard`:
+#   test (daemon + web) → build image → push GHCR → SSH VPS → deploy.sh
+# A failed test/build never reaches the server; an unhealthy release auto-rolls
+# back on the box. The daemon restarts only when non-web code changed.
+on:
+  push:
+    branches: [dashboard]
+
+# Serialize deploys so two pushes never race the single VPS. Do NOT cancel a
+# deploy already talking to the box — queue behind it.
+concurrency:
+  group: deploy-dashboard
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    # Deploy steps run only once the VPS secrets exist. Until then the run is
+    # still green (tests + build + GHCR push) and the deploy is skipped.
+    env:
+      HAS_DEPLOY: ${{ secrets.VPS_HOST != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # need the previous commit to diff changed paths
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # ── gate 1: daemon tests (typecheck + vitest) ──
+      - name: Install daemon deps
+        run: npm ci
+      - name: Daemon tests
+        run: npm test
+
+      # ── gate 2: web tests + build must compile ──
+      - name: Install web deps
+        working-directory: dashboard/web
+        run: npm ci
+      - name: Web tests
+        working-directory: dashboard/web
+        run: npm test
+      - name: Web build (compile check)
+        working-directory: dashboard/web
+        run: npm run build
+
+      # ── decide restart scope from changed paths ──
+      # web-only  → nothing outside dashboard/web/ changed → hot-swap web
+      # full      → daemon/core/infra changed → recreate daemon too
+      - name: Determine deploy scope
+        id: scope
+        env:
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "scope=full" >> "$GITHUB_OUTPUT"; echo "first/forced push → full"; exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BEFORE" "$SHA")
+          echo "changed files:"; echo "$CHANGED"
+          if echo "$CHANGED" | grep -qvE '^dashboard/web/'; then
+            echo "scope=full" >> "$GITHUB_OUTPUT"; echo "→ full (non-web change)"
+          else
+            echo "scope=web-only" >> "$GITHUB_OUTPUT"; echo "→ web-only"
+          fi
+
+      # ── build + push the (now tested) image ──
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/umarmuhdhor/meridian:${{ github.sha }}
+            ghcr.io/umarmuhdhor/meridian:dashboard
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── ship infra (compose + deploy script) so the box stays in sync ──
+      - name: Copy compose + deploy script to VPS
+        if: env.HAS_DEPLOY == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "docker-compose.yml,deploy/deploy.sh"
+          target: "meridian"
+
+      # ── run the deploy (pull → scoped cutover → health-check → rollback) ──
+      - name: Deploy
+        if: env.HAS_DEPLOY == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          SHA: ${{ github.sha }}
+          SCOPE: ${{ steps.scope.outputs.scope }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 5m
+          envs: SHA,SCOPE
+          script: |
+            cd ~/meridian
+            chmod +x deploy/deploy.sh
+            ./deploy/deploy.sh "$SHA" "$SCOPE"
