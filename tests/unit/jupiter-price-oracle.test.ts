@@ -26,8 +26,9 @@ function jsonResponse(body: unknown, status = 200): Awaited<ReturnType<FetchImpl
   };
 }
 
+// Jupiter Price v3 shape: flat mint -> { usdPrice } map (no `data` wrapper).
 function priceBody(price: number, mint = WRAPPED_SOL_MINT): unknown {
-  return { data: { [mint]: { id: mint, mintSymbol: "SOL", price } } };
+  return { [mint]: { usdPrice: price, decimals: 9 } };
 }
 
 describe("createJupiterPriceOracle", () => {
