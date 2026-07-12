@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { DaemonStatusProvider, DaemonStatusBanner } from "./DaemonStatus";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
@@ -8,6 +9,18 @@ import { ToastViewport } from "./ui/Toast";
 import { useLiveEvents } from "@/lib/useLiveEvents";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+
+  // The PIN login screen renders bare — no nav, no SSE/data hooks (which would
+  // 401 pre-auth). Middleware guarantees only /login reaches here unauthed.
+  if (pathname === "/login") {
+    return <>{children}</>;
+  }
+
+  return <Shell>{children}</Shell>;
+}
+
+function Shell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   useLiveEvents(); // SSE push (positions + decisions); falls back to polling if unavailable

@@ -1,4 +1,15 @@
 # Meridian — standalone VPS deploy (Hong Kong). LIVE config.
+#
+# Public access: cloudflared (below) runs a Cloudflare Tunnel and reaches the
+# dashboard by service name at http://meridian:3000 over the shared `mnet`
+# network — no inbound ports opened on the host. The 127.0.0.1:3000 bind is
+# kept only for SSH-tunnel admin. The dashboard itself is PIN-gated (Next.js
+# middleware) and sits behind Cloudflare Access; the daemon bridge (:8787)
+# stays container-internal and is never exposed.
+networks:
+  mnet:
+    driver: bridge
+
 services:
   meridian:
     build: .
@@ -21,3 +32,18 @@ services:
       - /home/ubuntu/meridian/user-config.json:/app/user-config.json
     ports:
       - "127.0.0.1:3000:3000"
+    networks: [mnet]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: meridian-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Set CLOUDFLARE_TUNNEL_TOKEN in ~/meridian/.env after creating the
+      # tunnel in the Cloudflare Zero Trust dashboard. Public hostname
+      # calisto.nafidinara.com → http://meridian:3000 (configured CF-side).
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - meridian
+    networks: [mnet]

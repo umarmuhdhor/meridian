@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { List, ArrowsClockwise } from "@phosphor-icons/react";
+import { List, ArrowsClockwise, SignOut } from "@phosphor-icons/react";
 import { fetchJson } from "@/lib/api";
 import { LIVE_INTERVAL } from "@/lib/query";
 import { formatSol } from "@/lib/format";
@@ -67,6 +67,17 @@ export function TopBar({ onOpenMobile }: { onOpenMobile: () => void }) {
           <ArrowsClockwise size={18} className={refreshing ? "mrd-spin" : undefined} />
         </button>
         <ThemeToggle />
+        <button
+          onClick={async () => {
+            await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+            window.location.href = "/login";
+          }}
+          aria-label="Log out"
+          title="Log out"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-[var(--radius-md)] text-text-secondary hover:bg-surface-2 hover:text-text-primary transition-colors"
+        >
+          <SignOut size={18} />
+        </button>
       </div>
     </header>
   );
