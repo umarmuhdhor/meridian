@@ -1,0 +1,29 @@
+# Never bake into the image — rebuilt or provided at runtime.
+node_modules
+dashboard/web/node_modules
+dist
+dashboard/web/.next
+.git
+.env
+.env.*
+!.env.example
+
+# Runtime state lives on the /opt/data volume, never in the image.
+state.json
+lessons.json
+smart-wallets.json
+pool-memory.json
+token-blacklist.json
+strategy-library.json
+decision-log.json
+hivemind-cache.json
+signal-weights.json
+dev-blocklist.json
+discord-signals.json
+user-config.json
+logs
+
+# Cruft
+.DS_Store
+.claude/worktrees
+coverage

@@ -12,7 +12,8 @@
     "test": "npm run typecheck && npm run test:unit",
     "test:unit": "vitest run",
     "test:watch": "vitest",
-    "parallel-run": "./scripts/parallel-run/run-parallel.sh"
+    "parallel-run": "./scripts/parallel-run/run-parallel.sh",
+    "postinstall": "node scripts/patch-anchor.js"
   },
   "dependencies": {
     "@meteora-ag/dlmm": "1.9.4",

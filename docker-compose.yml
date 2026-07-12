@@ -1,0 +1,23 @@
+# Meridian — standalone VPS deploy (Hong Kong). LIVE config.
+services:
+  meridian:
+    build: .
+    image: meridian
+    container_name: meridian
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - MERIDIAN_STATE_DIR=/opt/data
+      - MERIDIAN_ROOT=/opt/data
+      - DASHBOARD_ENABLED=true
+      - MERIDIAN_AUTONOMOUS=true
+      - NODE_ENV=production
+      # Real adapters (meteora cascades price=jupiter, market=real):
+      - MERIDIAN_CHAIN=meteora
+      - MERIDIAN_MARKET=real
+      - MERIDIAN_PRICE=jupiter
+    volumes:
+      - /home/ubuntu/meridian-data:/opt/data
+      - /home/ubuntu/meridian/user-config.json:/app/user-config.json
+    ports:
+      - "127.0.0.1:3000:3000"

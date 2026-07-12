@@ -17,23 +17,24 @@ import type {
 import { createTtlCache } from "../../../shared/cache.js";
 import { assessPnl, roundNum } from "../../../domain/rules/pnl.js";
 
-const JUPITER_PRICE_BASE_URL = "https://price.jup.ag/v6";
+const JUPITER_PRICE_BASE_URL = "https://lite-api.jup.ag/price/v3";
 
 /** Best-effort batch USD price lookup keyed by mint (empty map on any failure). */
 async function fetchJupiterPrices(mints: string[]): Promise<Record<string, number>> {
   if (mints.length === 0) return {};
   const fetchImpl = globalThis.fetch;
   if (typeof fetchImpl !== "function") return {};
-  const url = `${JUPITER_PRICE_BASE_URL}/price?ids=${encodeURIComponent(mints.join(","))}`;
+  const url = `${JUPITER_PRICE_BASE_URL}?ids=${encodeURIComponent(mints.join(","))}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5_000);
   try {
     const res = await fetchImpl(url, { signal: controller.signal });
     if (!res.ok) return {};
-    const body = (await res.json()) as { data?: Record<string, { price?: number | string }> };
+    // Jupiter Price v3: flat mint→{usdPrice} map (no `data` wrapper).
+    const body = (await res.json()) as Record<string, { usdPrice?: number | string }>;
     const out: Record<string, number> = {};
-    for (const [mint, v] of Object.entries(body.data ?? {})) {
-      const n = typeof v.price === "number" ? v.price : Number(v.price);
+    for (const [mint, v] of Object.entries(body ?? {})) {
+      const n = typeof v.usdPrice === "number" ? v.usdPrice : Number(v.usdPrice);
       if (Number.isFinite(n)) out[mint] = n;
     }
     return out;

@@ -7,27 +7,25 @@ import { createTtlCache } from "../../shared/cache.js";
 /** Wrapped-SOL mint on mainnet — Jupiter keys prices by mint address. */
 export const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
 
-/** Jupiter Price API v6 base URL. */
-export const DEFAULT_JUPITER_PRICE_BASE_URL = "https://price.jup.ag/v6";
+/** Jupiter Price API v3 base URL (v6 was sunset). Keyed by mint; field `usdPrice`. */
+export const DEFAULT_JUPITER_PRICE_BASE_URL = "https://lite-api.jup.ag/price/v3";
 
 const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 250;
 
-/** Minimum shape we care about from Jupiter's response. */
-const JupiterPriceResponseSchema = z.object({
-  data: z.record(
-    z.object({
-      price: z.union([z.number(), z.string()]).transform((v) => {
-        const n = typeof v === "number" ? v : Number(v);
-        if (!Number.isFinite(n) || n <= 0) {
-          throw new Error(`invalid price: ${v}`);
-        }
-        return n;
-      }),
+/** Minimum shape we care about from Jupiter Price v3 — a flat mint→{usdPrice} map. */
+const JupiterPriceResponseSchema = z.record(
+  z.object({
+    usdPrice: z.union([z.number(), z.string()]).transform((v) => {
+      const n = typeof v === "number" ? v : Number(v);
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new Error(`invalid price: ${v}`);
+      }
+      return n;
     }),
-  ),
-});
+  }),
+);
 
 export type FetchImpl = (input: string, init?: { signal?: AbortSignal }) => Promise<{
   ok: boolean;
@@ -85,7 +83,7 @@ export function createJupiterPriceOracle(opts: JupiterPriceOracleOptions): Price
   const cache = createTtlCache<number>({ ttlMs, clock: opts.clock });
 
   async function fetchOnce(): Promise<number> {
-    const url = `${baseUrl}/price?ids=${encodeURIComponent(solMint)}`;
+    const url = `${baseUrl}?ids=${encodeURIComponent(solMint)}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Awaited<ReturnType<FetchImpl>>;
@@ -99,11 +97,11 @@ export function createJupiterPriceOracle(opts: JupiterPriceOracleOptions): Price
     }
     const body: unknown = await res.json();
     const parsed = JupiterPriceResponseSchema.parse(body);
-    const entry = parsed.data[solMint];
+    const entry = parsed[solMint];
     if (!entry) {
       throw new Error(`jupiter price: mint ${solMint} missing from response`);
     }
-    return entry.price;
+    return entry.usdPrice;
   }
 
   async function fetchWithRetry(): Promise<number> {
