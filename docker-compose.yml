@@ -22,7 +22,7 @@ networks:
 services:
   meridian:
     build: .
-    image: ghcr.io/umarmuhdhor/meridian:dashboard
+    image: ${MERIDIAN_IMAGE:-ghcr.io/umarmuhdhor/meridian:dashboard}
     container_name: meridian
     restart: unless-stopped
     command: ["pm2-runtime", "ecosystem.config.cjs", "--only", "meridian"]
@@ -45,7 +45,7 @@ services:
     networks: [mnet]
 
   meridian-web:
-    image: ghcr.io/umarmuhdhor/meridian:dashboard
+    image: ${MERIDIAN_IMAGE:-ghcr.io/umarmuhdhor/meridian:dashboard}
     container_name: meridian-web
     restart: unless-stopped
     command: ["pm2-runtime", "ecosystem.config.cjs", "--only", "meridian-web"]

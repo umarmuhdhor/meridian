@@ -23,7 +23,8 @@ SCOPE="${2:?usage: deploy.sh <sha> <scope> [--dry-run]}"
 DRY_RUN="no"
 [ "${3:-}" = "--dry-run" ] && DRY_RUN="yes"
 
-REG="ghcr.io/umarmuhdhor/meridian"
+# Registry/image base. Override MERIDIAN_REG for testing against a local registry.
+REG="${MERIDIAN_REG:-ghcr.io/umarmuhdhor/meridian}"
 COMPOSE_DIR="${MERIDIAN_DIR:-$HOME/meridian}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 DC="sudo docker"
@@ -71,7 +72,13 @@ healthcheck() {
 rollback() {
   log "ROLLING BACK to :previous"
   run "$DC tag ${REG}:previous ${REG}:dashboard"
-  run "$DC compose up -d"
+  # Roll back the SAME scope we deployed — a failed web deploy must not restart
+  # the trading daemon.
+  if [ "$SCOPE" = "web-only" ]; then
+    run "$DC compose up -d --no-deps --force-recreate meridian-web"
+  else
+    run "$DC compose up -d --force-recreate"
+  fi
   # Give the rollback a moment; report but don't loop.
   sleep 8
   if [ "$DRY_RUN" = "no" ] && daemon_ok; then log "rollback healthy"; else log "rollback state uncertain — CHECK MANUALLY"; fi
@@ -89,10 +96,12 @@ run "$DC tag ${REG}:${SHA} ${REG}:dashboard"
 
 if [ "$SCOPE" = "web-only" ]; then
   log "web-only cutover (daemon untouched)"
-  run "$DC compose up -d --no-deps meridian-web"
+  # --force-recreate: the tag was repointed to a new image ID; without it
+  # compose may see the same tag string and skip the recreate.
+  run "$DC compose up -d --no-deps --force-recreate meridian-web"
 else
   log "full cutover (daemon + web)"
-  run "$DC compose up -d"
+  run "$DC compose up -d --force-recreate"
 fi
 
 if [ "$DRY_RUN" = "yes" ]; then log "dry-run complete"; exit 0; fi
