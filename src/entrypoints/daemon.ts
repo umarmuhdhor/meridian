@@ -430,7 +430,19 @@ async function main(): Promise<void> {
   console.log(`  wallet: ${walletAtBoot.sol} SOL ($${walletAtBoot.sol_usd})`);
 
   const registry = createRegistry(ALL_TOOLS);
-  const model = process.env.LLM_MODEL ?? "demo/fake-v1";
+  // Per-role model selection. `LLM_MODEL` env (single global) still overrides for
+  // ops/debug; in demo mode the fake client's model id is used; otherwise each cycle
+  // reads its role's configured model live from ctx.config (so dashboard model edits
+  // hot-reload). Fixes the prod outage where an unset LLM_MODEL fell back to the fake
+  // id "demo/fake-v1" and every real screening LLM call 400'd.
+  const modelFor = (role: "screening" | "management" | "general"): string => {
+    if (process.env.LLM_MODEL) return process.env.LLM_MODEL;
+    if (usingDemoLLM) return "demo/fake-v1";
+    const llm = ctx.config.llm;
+    if (role === "screening") return llm.screeningModel;
+    if (role === "management") return llm.managementModel;
+    return llm.generalModel;
+  };
 
   // ── Dashboard bridge (env-gated; the ONLY dashboard touch-point in core) ──
   // Without DASHBOARD_ENABLED=true the bridge module is never even imported, so daemon
@@ -446,7 +458,7 @@ async function main(): Promise<void> {
         ctx,
         llm,
         registry,
-        model,
+        model: modelFor("general"),
         stateDir: STATE_DIR,
         logStore,
       });
@@ -464,8 +476,8 @@ async function main(): Promise<void> {
     const screenMs = ctx.config.schedule.screeningIntervalMin * 60_000;
     const manageMs = ctx.config.schedule.managementIntervalMin * 60_000;
     console.log(`  screening every ${screenMs / 1000}s | management every ${manageMs / 1000}s`);
-    scheduler.every(screenMs, () => runScreeningCycle({ ctx, llm, registry, model }).then(() => {}), "screening");
-    scheduler.every(manageMs, () => runManagementCycle({ ctx, llm, registry, model }).then(() => {}), "management");
+    scheduler.every(screenMs, () => runScreeningCycle({ ctx, llm, registry, model: modelFor("screening") }).then(() => {}), "screening");
+    scheduler.every(manageMs, () => runManagementCycle({ ctx, llm, registry, model: modelFor("management") }).then(() => {}), "management");
     const pollerHandle = createPnlPoller({
       clock: ctx.clock,
       logger: ctx.logger,
@@ -481,7 +493,7 @@ async function main(): Promise<void> {
     scheduler.every(
       healthMs,
       () =>
-        runHealthCycle({ ctx, llm, registry, model }).then(() => {}).catch((err: unknown) => {
+        runHealthCycle({ ctx, llm, registry, model: modelFor("management") }).then(() => {}).catch((err: unknown) => {
           ctx.logger.warn("health", "cycle failed", {
             error: err instanceof Error ? err.message : String(err),
           });
@@ -564,7 +576,7 @@ async function main(): Promise<void> {
               ctx,
               llm,
               registry,
-              model,
+              model: modelFor("general"),
               scheduler,
               shutdown,
               writesEnabled: process.env.MERIDIAN_WRITE_UNSAFE === "true",
@@ -589,7 +601,7 @@ async function main(): Promise<void> {
   }
 
   // One-shot mode — run one screening cycle for demo.
-  const outcome = await runScreeningCycle({ ctx, llm, registry, model });
+  const outcome = await runScreeningCycle({ ctx, llm, registry, model: modelFor("screening") });
   console.log("\n─── screening cycle ───");
   console.log(`outcome: ${outcome.kind}`);
   if (outcome.kind === "invoked") {
