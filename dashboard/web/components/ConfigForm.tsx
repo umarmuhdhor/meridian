@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle, Warning } from "@phosphor-icons/react";
+import { CheckCircle, Warning, Info } from "@phosphor-icons/react";
 import { useFile } from "@/lib/hooks";
 import { Button } from "./ui/Button";
 import { ConfirmModal } from "./ConfirmModal";
@@ -121,7 +121,17 @@ export function ConfigForm() {
                 return (
                   <div key={field.key} className="flex flex-col gap-1">
                     <label className="flex items-center gap-1 text-[12px] text-text-tertiary" htmlFor={field.key}>
-                      {field.key}
+                      <span className="truncate">{field.key}</span>
+                      {field.unit && <span className="text-text-disabled">· {field.unit}</span>}
+                      {field.help && (
+                        <span
+                          title={field.help}
+                          aria-label={field.help}
+                          className="inline-flex cursor-help text-text-disabled hover:text-text-secondary"
+                        >
+                          <Info size={12} weight="bold" />
+                        </span>
+                      )}
                       {field.secret && <span className="text-text-disabled">(secret)</span>}
                       {dirty && <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: "var(--accent-bright)" }} />}
                     </label>
@@ -136,11 +146,31 @@ export function ConfigForm() {
                         />
                         {values[field.key] === true ? "true" : "false"}
                       </label>
+                    ) : field.options ? (
+                      <select
+                        id={field.key}
+                        value={String(values[field.key] ?? "")}
+                        onChange={(e) => set(field.key, e.target.value)}
+                        className={inputCls}
+                      >
+                        {/* Preserve an out-of-enum current value so a stale config isn't silently rewritten. */}
+                        {values[field.key] != null &&
+                          String(values[field.key]) !== "" &&
+                          !field.options.includes(String(values[field.key])) && (
+                            <option value={String(values[field.key])}>{String(values[field.key])} (current)</option>
+                          )}
+                        {field.options.map((o) => (
+                          <option key={o} value={o}>
+                            {o}
+                          </option>
+                        ))}
+                      </select>
                     ) : (
                       <input
                         id={field.key}
                         value={String(values[field.key] ?? "")}
                         inputMode={field.type === "number" ? "decimal" : undefined}
+                        placeholder={field.unit ?? undefined}
                         onChange={(e) => set(field.key, e.target.value)}
                         className={inputCls}
                       />

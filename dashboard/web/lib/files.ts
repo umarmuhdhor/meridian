@@ -19,7 +19,10 @@ export const FILE_WHITELIST: Record<string, string> = {
   "user-config": "user-config.json",
 };
 
-const SECRET = /key|token|secret|mnemonic/i;
+// Match keys ENDING in a credential word (publicApiKey, hiveMindApiKey, ...) so
+// substrings don't over-match — a bare /token/ redacted minTokenFeesSol and
+// min/maxTokenAgeHours. Keep in sync with src/adapters/dashboard/redact.ts.
+const SECRET = /(key|secret|mnemonic|password|token)$/i;
 
 export function redactSecrets(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(redactSecrets);
