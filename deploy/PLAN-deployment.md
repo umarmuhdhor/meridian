@@ -1,5 +1,8 @@
 # PLAN — Meridian Live Deployment Runbook
 
+> **⚠️ HISTORICAL** — original vivobook rollout plan. Production runs on a Tencent
+> HK VPS via CI/CD now. **Current runbook: [`OPERATIONS.md`](OPERATIONS.md).**
+
 Companion to [PRD-deployment.md](./PRD-deployment.md). Execution order, exact
 commands, verification, and the live cutover. Goal: **live, not dry-run.**
 

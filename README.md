@@ -159,6 +159,20 @@ See `dashboard/PRD.md`, `dashboard/Design.md`, and `dashboard/plan/` for the ful
 
 ---
 
+## Production deployment
+
+Meridian is deployed live on a VPS as Docker containers, auto-deployed from the
+`dashboard` branch via GitHub Actions → GHCR, with a public PIN-gated dashboard
+behind Cloudflare Access. Push to `dashboard` and the server updates itself:
+tests gate the release, an unhealthy deploy auto-rolls-back, and dashboard-only
+changes hot-swap without restarting the trading daemon.
+
+**Full operations manual: [`deploy/OPERATIONS.md`](deploy/OPERATIONS.md)** — the
+A-Z on hosts, the deploy pipeline, secrets, config, dashboard auth, the runbook,
+troubleshooting, and rollback. Start there for anything deploy-related.
+
+---
+
 ## Rollback
 
 Legacy JS daemon lives at the `legacy-js` git tag.

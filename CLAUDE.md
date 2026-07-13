@@ -9,6 +9,31 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 
 ---
 
+## ⚠️ CURRENT STATE — READ BEFORE TRUSTING THE MODULE MAP BELOW
+
+Two things a new session must know first:
+
+1. **The live code is the TypeScript rewrite under `src/`.** Entry point is
+   `src/entrypoints/daemon.ts` → built to `dist/entrypoints/daemon.js`. The
+   detailed module map further down this file (`index.js`, `agent/agent.js`,
+   `tools/`, `persistence/`, `integrations/`, `file.js:NN` line refs) describes
+   the **retired legacy JS** architecture. The *concepts* still hold (roles, the
+   ReAct loop, safety checks, state files, cron cycles), but the *file paths are
+   `src/**` now*. Verify a path exists before citing it. A full rewrite of the
+   internals map to the TS layout is still pending — treat the map as conceptual.
+
+2. **Meridian is DEPLOYED and trading live.** It runs on a Tencent Hong Kong VPS
+   as 3 Docker containers, auto-deployed from the `dashboard` branch via GitHub
+   Actions → GHCR, with a public PIN-gated dashboard at `calisto.nafidinara.com`.
+   **The full operations manual is [`deploy/OPERATIONS.md`](deploy/OPERATIONS.md)**
+   — hosts, the deploy pipeline, secrets, config, dashboard auth, runbook,
+   troubleshooting, rollback. Read it before touching anything deploy-related.
+
+Anything about deployment/ops in the sections below is superseded by
+`deploy/OPERATIONS.md`.
+
+---
+
 ## TL;DR (read this first)
 
 - **What it is**: Node 22+ ESM service that runs an LLM-driven loop

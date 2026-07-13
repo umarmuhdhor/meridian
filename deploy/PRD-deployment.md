@@ -1,5 +1,10 @@
 # PRD — Meridian Production Deployment (vivobook home server)
 
+> **⚠️ HISTORICAL** — this was the original design for the vivobook home server
+> (single container, Caddy + Cloudflare Tunnel). Production actually runs on a
+> Tencent HK VPS with a split-container + CI/CD setup. **Current source of truth:
+> [`OPERATIONS.md`](OPERATIONS.md).** Kept for design-rationale reference.
+
 **Status:** in progress · **Owner:** Alfara Nafi Dinara · **Date:** 2026-07-12
 **Source branch:** `dashboard` · **Target host:** vivobook (`100.100.154.123`, Tailscale)
 
