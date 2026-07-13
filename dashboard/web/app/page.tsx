@@ -31,7 +31,9 @@ export default function OverviewPage() {
   const wr = winRate(lessonsQ.data?.performance);
 
   const topPositions = [...positions].sort((a, b) => Math.abs(b.total_value_usd ?? 0) - Math.abs(a.total_value_usd ?? 0)).slice(0, 3);
-  const recentDecisions = (decisionsQ.data?.decisions ?? []).slice(-5).reverse();
+  // Newest-first storage → take the first 5. The old `.slice(-5).reverse()` took
+  // the OLDEST 5, so "Recent decisions" showed day-old entries.
+  const recentDecisions = (decisionsQ.data?.decisions ?? []).slice(0, 5);
 
   const kpiLoading = positionsQ.isLoading || summaryQ.isLoading;
 

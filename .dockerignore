@@ -21,7 +21,7 @@ signal-weights.json
 dev-blocklist.json
 discord-signals.json
 user-config.json
-logs
+/logs
 
 # Cruft
 .DS_Store

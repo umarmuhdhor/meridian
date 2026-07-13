@@ -8,7 +8,9 @@ import type { DecisionLogFile } from "@/lib/types";
 
 export default function DecisionsPage() {
   const q = useFile<DecisionLogFile>("decision-log");
-  const decisions = (q.data?.decisions ?? []).slice().reverse();
+  // The repo stores newest-first (unshift); render as-is. The old `.reverse()`
+  // showed the OLDEST decisions on top, making fresh entries look days stale.
+  const decisions = q.data?.decisions ?? [];
 
   if (q.isLoading) return <SkeletonRows rows={6} />;
   if (q.isError) return <ErrorState message="Failed to load decisions." onRetry={() => q.refetch()} />;

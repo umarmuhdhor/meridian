@@ -27,8 +27,9 @@ decision-log.json
 hivemind-cache.json
 signal-weights.json
 
-# Logs
-logs/
+# Logs (anchor to repo root — a bare `logs/` also ignored dashboard/web/app/logs,
+# which silently dropped the dashboard Logs page from every commit + image).
+/logs/
 
 # OS
 .DS_Store
