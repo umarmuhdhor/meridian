@@ -38,47 +38,54 @@ export function createOpenRouterLLMClient(opts: OpenRouterOptions): LLMClient {
       if (req.tool_choice) body.tool_choice = toOpenAiToolChoice(req.tool_choice);
       if (req.temperature !== undefined) body.temperature = req.temperature;
       if (req.max_tokens !== undefined) body.max_tokens = req.max_tokens;
-      const response = await client.chat.completions.create(body);
 
-      // OpenRouter can return HTTP 200 with an error object (rate limit, provider
-      // down, context too long, moderation) and NO `choices` field. Reading
-      // response.choices[0] then throws a cryptic "Cannot read properties of
-      // undefined (reading '0')" that aborts the whole cycle. Guard + surface the
-      // real provider error so the next cycle's log is actionable.
-      const first = response.choices?.[0];
-      if (!first) {
+      // OpenRouter can return HTTP 200 with an error object and NO `choices` field
+      // when the upstream provider hiccups (502/503/504/529 unexpected_error, etc).
+      // The OpenAI SDK treats 200 as success and won't retry these, so a single
+      // transient blip aborts the whole cycle. Retry transient no-choices in-band;
+      // fail fast on client-side errors (4xx). Reading choices[0] without the ?.
+      // guard would throw a cryptic "reading '0'".
+      const TRANSIENT_CODES = new Set([500, 502, 503, 504, 529]);
+      const maxAttempts = 3;
+      let lastDetail = "";
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const response = await client.chat.completions.create(body);
+        const first = response.choices?.[0];
+        if (first) {
+          const msg = first.message;
+          const toolCalls: ToolCallRequest[] = (msg.tool_calls ?? []).flatMap((tc) => {
+            if (tc.type !== "function") return [];
+            return [{ id: tc.id, name: tc.function.name, arguments: tc.function.arguments ?? "" }];
+          });
+          return {
+            text: msg.content ?? null,
+            tool_calls: toolCalls,
+            finish_reason: first.finish_reason ?? null,
+            model: response.model,
+            ...(response.usage
+              ? {
+                  usage: {
+                    prompt_tokens: response.usage.prompt_tokens,
+                    completion_tokens: response.usage.completion_tokens,
+                    total_tokens: response.usage.total_tokens,
+                  },
+                }
+              : {}),
+          };
+        }
         const errObj = (response as { error?: { message?: string; code?: string | number } }).error;
-        const detail = errObj?.message
+        lastDetail = errObj?.message
           ? `provider error${errObj.code != null ? ` (${errObj.code})` : ""}: ${errObj.message}`
           : JSON.stringify(response).slice(0, 300);
-        throw new Error(`LLM returned no choices — ${detail}`);
+        const codeNum = typeof errObj?.code === "number" ? errObj.code : Number(errObj?.code);
+        // Unknown code (NaN) → treat as transient and retry; a real 4xx is fail-fast.
+        const transient = !Number.isFinite(codeNum) || TRANSIENT_CODES.has(codeNum);
+        if (attempt >= maxAttempts || !transient) {
+          throw new Error(`LLM returned no choices — ${lastDetail}`);
+        }
+        await new Promise((r) => setTimeout(r, 500 * attempt));
       }
-      const msg = first.message;
-      const toolCalls: ToolCallRequest[] = (msg.tool_calls ?? []).flatMap((tc) => {
-        if (tc.type !== "function") return [];
-        return [
-          {
-            id: tc.id,
-            name: tc.function.name,
-            arguments: tc.function.arguments ?? "",
-          },
-        ];
-      });
-      return {
-        text: msg.content ?? null,
-        tool_calls: toolCalls,
-        finish_reason: first.finish_reason ?? null,
-        model: response.model,
-        ...(response.usage
-          ? {
-              usage: {
-                prompt_tokens: response.usage.prompt_tokens,
-                completion_tokens: response.usage.completion_tokens,
-                total_tokens: response.usage.total_tokens,
-              },
-            }
-          : {}),
-      };
+      throw new Error(`LLM returned no choices — ${lastDetail}`);
     },
   };
 }
