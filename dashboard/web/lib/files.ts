@@ -19,20 +19,10 @@ export const FILE_WHITELIST: Record<string, string> = {
   "user-config": "user-config.json",
 };
 
-// Match keys ENDING in a credential word (publicApiKey, hiveMindApiKey, ...) so
-// substrings don't over-match — a bare /token/ redacted minTokenFeesSol and
-// min/maxTokenAgeHours. Keep in sync with src/adapters/dashboard/redact.ts.
-const SECRET = /(key|secret|mnemonic|password|token)$/i;
-
+// Redaction DISABLED by owner request (2026-07-13): single-owner dashboard behind
+// Cloudflare Access + PIN; the owner wants every value visible/editable, keys
+// included. Identity passthrough — mirror of src/adapters/dashboard/redact.ts.
 export function redactSecrets(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(redactSecrets);
-  if (v && typeof v === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      out[k] = SECRET.test(k) ? "[redacted]" : redactSecrets(val);
-    }
-    return out;
-  }
   return v;
 }
 

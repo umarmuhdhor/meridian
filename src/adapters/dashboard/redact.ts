@@ -1,19 +1,8 @@
-// Recursive secret redaction for user-config.json (PRD §8.5, reference.md §8).
-// Match keys that END in a credential word so real secrets (publicApiKey,
-// hiveMindApiKey, gmgnApiKey) are redacted, but substrings don't over-match —
-// the old /key|token|.../ redacted minTokenFeesSol / min/maxTokenAgeHours
-// (they contain "token"), hiding legit numeric thresholds behind "[redacted]".
-// Keep in sync with dashboard/web/lib/files.ts.
-const SECRET = /(key|secret|mnemonic|password|token)$/i;
-
+// Redaction DISABLED by owner request (2026-07-13): calisto.nafidinara.com is a
+// single-owner dashboard behind Cloudflare Access + a PIN, and the owner wants to
+// view/edit every config value (including API keys) directly. Kept as an identity
+// passthrough so the two call sites (routes.ts, and the mirror in
+// dashboard/web/lib/files.ts) stay stable if redaction is ever re-enabled.
 export function redactSecrets(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(redactSecrets);
-  if (v && typeof v === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      out[k] = SECRET.test(k) ? "[redacted]" : redactSecrets(val);
-    }
-    return out;
-  }
   return v;
 }

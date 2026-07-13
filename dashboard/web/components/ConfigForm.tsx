@@ -56,7 +56,8 @@ export function ConfigForm() {
     if (initialized.current || !q.data) return;
     const next: Record<string, Val> = {};
     for (const field of CONFIG_FIELDS) {
-      next[field.key] = field.secret ? "" : toInput(field, readValue(q.data as Cfg, field));
+      // Secrets are shown/edited like any field (redaction disabled per owner).
+      next[field.key] = toInput(field, readValue(q.data as Cfg, field));
     }
     setValues(next);
     setInitial(next);
@@ -75,7 +76,7 @@ export function ConfigForm() {
 
   const dirtyKeys = useMemo(
     () =>
-      CONFIG_FIELDS.filter((f) => !f.secret && values[f.key] !== initial[f.key] && submittable(f, values[f.key])).map((f) => f.key),
+      CONFIG_FIELDS.filter((f) => values[f.key] !== initial[f.key] && submittable(f, values[f.key])).map((f) => f.key),
     [values, initial]
   );
 
@@ -117,27 +118,28 @@ export function ConfigForm() {
             <h3 className="mb-2 text-[12px] font-medium uppercase tracking-wide text-text-tertiary">{group}</h3>
             <div className="grid grid-cols-1 gap-3 rounded-[var(--radius-lg)] border border-border bg-surface-1 p-4 md:grid-cols-2 lg:grid-cols-3">
               {fields.map((field) => {
-                const dirty = !field.secret && values[field.key] !== initial[field.key] && submittable(field, values[field.key]);
+                const dirty = values[field.key] !== initial[field.key] && submittable(field, values[field.key]);
                 return (
                   <div key={field.key} className="flex flex-col gap-1">
                     <label className="flex items-center gap-1 text-[12px] text-text-tertiary" htmlFor={field.key}>
                       <span className="truncate">{field.key}</span>
                       {field.unit && <span className="text-text-disabled">· {field.unit}</span>}
                       {field.help && (
-                        <span
-                          title={field.help}
-                          aria-label={field.help}
-                          className="inline-flex cursor-help text-text-disabled hover:text-text-secondary"
-                        >
-                          <Info size={12} weight="bold" />
+                        <span className="group relative inline-flex shrink-0 cursor-help text-text-disabled hover:text-text-secondary">
+                          <Info size={13} weight="bold" />
+                          <span
+                            role="tooltip"
+                            className="pointer-events-none absolute left-1/2 top-[130%] z-30 hidden w-60 -translate-x-1/2 rounded-[var(--radius-md)] border border-border bg-surface-3 px-2.5 py-1.5 text-[11px] font-normal leading-snug text-text-secondary shadow-lg group-hover:block"
+                            style={{ boxShadow: "var(--shadow-lg)" }}
+                          >
+                            {field.help}
+                          </span>
                         </span>
                       )}
-                      {field.secret && <span className="text-text-disabled">(secret)</span>}
+                      {field.secret && <span className="text-text-disabled">(sensitive)</span>}
                       {dirty && <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: "var(--accent-bright)" }} />}
                     </label>
-                    {field.secret ? (
-                      <input id={field.key} value="[redacted]" readOnly disabled className={`${inputCls} opacity-60`} />
-                    ) : field.type === "boolean" ? (
+                    {field.type === "boolean" ? (
                       <label className="flex h-9 items-center gap-2 text-[13px] text-text-secondary">
                         <input
                           type="checkbox"
