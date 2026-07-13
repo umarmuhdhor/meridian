@@ -74,6 +74,12 @@ export interface MeteoraChainClientOptions {
    */
   pnl?: MeteoraDatapiPnlFetcher;
   /**
+   * Optional base-mint → token symbol resolver (e.g. token-info client). When
+   * present, positions show `Wukong/SOL` instead of the mint prefix `F4Tn/SOL`.
+   * Best-effort + cached; falls back to the mint prefix on null/failure.
+   */
+  symbolResolver?: (mint: string) => Promise<string | null>;
+  /**
    * Sanity gap between reported vs derived PnL % — informational only, mirrors
    * `config.management.pnlSanityMaxDiffPct` in tools/dlmm.js.
    */
@@ -144,6 +150,20 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
     clock,
   });
   const positionToPool = new Map<string, string>();
+  // mint → symbol cache (symbols are stable; resolve once). null = resolved-but-unknown.
+  const symbolCache = new Map<string, string | null>();
+  async function resolveSymbol(mint: string | null): Promise<string | null> {
+    if (!mint || !opts.symbolResolver) return null;
+    if (symbolCache.has(mint)) return symbolCache.get(mint) ?? null;
+    let sym: string | null = null;
+    try {
+      sym = await opts.symbolResolver(mint);
+    } catch {
+      sym = null;
+    }
+    symbolCache.set(mint, sym);
+    return sym;
+  }
 
   const defaultSdkLoader: SdkLoader = async () =>
     (await import("@meteora-ag/dlmm")) as unknown as import("./write-paths.js").SdkNamespace;
@@ -288,6 +308,16 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
     }
     const solUsd = await solUsdPromise;
 
+    // Resolve base-mint symbols once (parallel, cached) so pairs read as Wukong/SOL.
+    const symbolByMint = new Map<string, string | null>();
+    await Promise.all(
+      [...new Set(rawEntries.map((e) => e.baseMint).filter((m): m is string => !!m))].map(
+        async (mint) => {
+          symbolByMint.set(mint, await resolveSymbol(mint));
+        },
+      ),
+    );
+
     const positions: OnChainPosition[] = [];
     const fetchedAt = clock.now().toISOString();
     for (const { poolPk, baseMint, positions: rawPositions } of rawEntries) {
@@ -322,7 +352,7 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
         positions.push({
           position: rp.addr,
           pool: poolPk,
-          pair: `${baseMint?.slice(0, 4) ?? "?"}/SOL`,
+          pair: `${(baseMint && symbolByMint.get(baseMint)) || baseMint?.slice(0, 4) || "?"}/SOL`,
           base_mint: baseMint,
           lower_bin: datapi?.lowerBinId ?? rp.lower,
           upper_bin: datapi?.upperBinId ?? rp.upper,

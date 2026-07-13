@@ -218,6 +218,9 @@ async function boot(): Promise<BootResult> {
 
   let chain: ChainClient;
   let swap: SwapClient;
+  // Late-bound base-mint → symbol resolver; assigned once tokenInfo is selected
+  // below so the meteora chain can label positions Wukong/SOL instead of F4Tn/SOL.
+  let resolveTokenSymbol: ((mint: string) => Promise<string | null>) | null = null;
   if (chainMode === "meteora") {
     const rpc = process.env.RPC_URL;
     const secret = process.env.WALLET_PRIVATE_KEY;
@@ -235,6 +238,9 @@ async function boot(): Promise<BootResult> {
         "MERIDIAN_WRITE_UNSAFE=true — real Meteora write paths ARMED. Real SOL can move.",
       );
     }
+    // Late-bound so positions show token symbols (Wukong/SOL) not mint prefixes.
+    // tokenInfo is selected below; getMyPositions only runs post-boot, by which
+    // point resolveTokenSymbol is assigned.
     chain = createMeteoraChainClient({
       connection,
       wallet,
@@ -242,6 +248,7 @@ async function boot(): Promise<BootResult> {
       clock,
       logger,
       pnl,
+      symbolResolver: (mint) => (resolveTokenSymbol ? resolveTokenSymbol(mint) : Promise.resolve(null)),
       solMode: cfg.value.management.solMode,
       pnlMaxDiffPct: cfg.value.management.pnlSanityMaxDiffPct,
       writesEnabled,
@@ -326,6 +333,8 @@ async function boot(): Promise<BootResult> {
     marketMode === "real"
       ? createJupiterTokenInfo({ logger, now: nowFn })
       : createFakeTokenInfo();
+  // Wire the late-bound symbol resolver now that tokenInfo exists (meteora chain reads it).
+  resolveTokenSymbol = (mint) => tokenInfo.getInfo(mint).then((i) => i.symbol ?? null).catch(() => null);
   const rugCheck: RugCheckClient =
     marketMode === "real" ? createRugcheckAdapter({ logger }) : createFakeRugCheck();
   const smartWalletChecker: SmartWalletChecker =
