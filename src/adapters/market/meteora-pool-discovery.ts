@@ -42,6 +42,9 @@ const RawTokenSchema = z
 const RawPoolSchema = z
   .object({
     pool_address: z.string().optional(),
+    // The search endpoint (/pools?query=) names the pool id `address`; the filter
+    // endpoint uses `pool_address`. Accept both or search_pools yields 0 results.
+    address: z.string().optional(),
     name: z.string().optional(),
     token_x: RawTokenSchema.optional(),
     token_y: RawTokenSchema.optional(),
@@ -185,8 +188,8 @@ export function createMeteoraPoolDiscovery(
     // Resolve each field nested-first (current datapi), then flat (legacy shape).
     const baseMint = raw.token_x?.address ?? raw.base_token_mint ?? raw.base_mint;
     const quoteMint = raw.token_y?.address ?? raw.quote_token_mint ?? raw.quote_mint;
-    if (!baseMint || !raw.pool_address) return null;
-    const poolAddress = raw.pool_address;
+    const poolAddress = raw.pool_address ?? raw.address;
+    if (!baseMint || !poolAddress) return null;
     const nowMs = opts.now().getTime();
     const createdAt = raw.token_x?.created_at ?? raw.base_token_created_at;
     const parsed = CandidatePoolSchema.safeParse({

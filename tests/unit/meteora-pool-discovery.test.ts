@@ -243,4 +243,24 @@ describe("createMeteoraPoolDiscovery.search", () => {
     const pools = await client.search("MEME", 2);
     expect(pools).toHaveLength(2);
   });
+
+  it("normalizes the search shape where the pool id is `address` (not pool_address)", async () => {
+    // Regression: search_pools returned 0 results because the search endpoint
+    // names the pool id `address` while normalize required `pool_address`.
+    const searchRow = {
+      address: "SearchPoolddddddddddddddddddddddddddddddd",
+      name: "SRCH/SOL",
+      tvl: 30000,
+      volume: 5000,
+      dlmm_params: { bin_step: 100 },
+      token_x: { address: "SrchMint111111111111111111111111111111111", market_cap: 900000 },
+      token_y: { address: "So11111111111111111111111111111111111111112" },
+    };
+    const fetchImpl = vi.fn<FetchImpl>(async () => jsonRes({ data: [searchRow] }));
+    const client = createMeteoraPoolDiscovery({ logger: nullLogger, screening, now, fetchImpl });
+    const pools = await client.search("SRCH", 5);
+    expect(pools).toHaveLength(1);
+    expect(pools[0]!.pool_address).toBe("SearchPoolddddddddddddddddddddddddddddddd");
+    expect(pools[0]!.base_mint).toBe("SrchMint111111111111111111111111111111111");
+  });
 });
