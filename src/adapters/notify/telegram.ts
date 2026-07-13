@@ -15,6 +15,10 @@ const DEFAULT_BASE_URL = "https://api.telegram.org";
 const TELEGRAM_MAX_MESSAGE = 4096;
 const DEFAULT_TIMEOUT_MS = 8_000;
 
+/** Deep link to the pool on Meteora (Telegram auto-links the bare URL). */
+const meteoraPoolUrl = (pool: string): string =>
+  `https://www.meteora.ag/dlmm/${pool}?referrer=portfolio`;
+
 export type FetchImpl = (
   input: string,
   init?: {
@@ -206,6 +210,7 @@ export function createTelegramNotifier(opts: TelegramNotifierOptions): Notifier 
           `pool: ${r.pool_address}\n` +
           `strategy: ${r.strategy} bins=${r.lower_bin}..${r.upper_bin} active=${r.active_bin}\n` +
           `amount: ${r.amount_sol} SOL\n` +
+          `${meteoraPoolUrl(r.pool_address)}\n` +
           `tx: ${r.tx ?? "(none)"}`,
       );
     },
@@ -217,6 +222,7 @@ export function createTelegramNotifier(opts: TelegramNotifierOptions): Notifier 
           `pnl: ${r.final_pnl_pct ?? "?"}%\n` +
           `fees: $${r.fees_earned_usd}\n` +
           `reason: ${r.reason}\n` +
+          `${r.pool_address ? `${meteoraPoolUrl(r.pool_address)}\n` : ""}` +
           `tx: ${r.tx ?? "(none)"}`,
       );
     },

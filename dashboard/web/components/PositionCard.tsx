@@ -1,6 +1,8 @@
+import { ArrowSquareOut } from "@phosphor-icons/react";
 import { StatusBadge } from "./StatusBadge";
 import { pnlColorClass } from "@/lib/pnl-color";
 import { formatPnlPct, formatPnlUsd, formatUsd, formatDuration, binRange } from "@/lib/format";
+import { meteoraPoolUrl } from "@/lib/meteora";
 import type { Position } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
@@ -21,7 +23,20 @@ export function PositionCard({ p, actions }: { p: Position; actions?: React.Reac
     <div className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-border bg-surface-1 p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="truncate text-[15px] font-semibold text-text-primary">{name}</div>
+          {p.pool ? (
+            <a
+              href={meteoraPoolUrl(p.pool)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open pool on Meteora"
+              className="group inline-flex max-w-full items-center gap-1 text-[15px] font-semibold text-text-primary hover:underline"
+            >
+              <span className="truncate">{name}</span>
+              <ArrowSquareOut size={13} className="shrink-0 text-text-tertiary group-hover:text-text-secondary" />
+            </a>
+          ) : (
+            <div className="truncate text-[15px] font-semibold text-text-primary">{name}</div>
+          )}
           <div className="text-[12px] text-text-tertiary">{p.strategy || "-"}</div>
         </div>
         <StatusBadge status={status} detail={detail} />

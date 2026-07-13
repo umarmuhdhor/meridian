@@ -1,7 +1,8 @@
 "use client";
 
-import { ChartLineUp } from "@phosphor-icons/react";
+import { ChartLineUp, ArrowSquareOut } from "@phosphor-icons/react";
 import { usePositions, useFile } from "@/lib/hooks";
+import { meteoraPoolUrl } from "@/lib/meteora";
 import { PositionCard } from "@/components/PositionCard";
 import { PositionActions } from "@/components/PositionActions";
 import { PositionHistory } from "@/components/PositionHistory";
@@ -56,7 +57,20 @@ function OpenPositions() {
             {positions.map((p) => (
               <tr key={p.position} className="hover:bg-surface-2">
                 <td className="px-3 py-2.5">
-                  <div className="font-medium text-text-primary">{p.pool_name || p.pair || "-"}</div>
+                  {p.pool ? (
+                    <a
+                      href={meteoraPoolUrl(p.pool)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open pool on Meteora"
+                      className="group inline-flex items-center gap-1 font-medium text-text-primary hover:underline"
+                    >
+                      {p.pool_name || p.pair || "-"}
+                      <ArrowSquareOut size={12} className="text-text-tertiary group-hover:text-text-secondary" />
+                    </a>
+                  ) : (
+                    <div className="font-medium text-text-primary">{p.pool_name || p.pair || "-"}</div>
+                  )}
                   <Address value={p.position} chars={4} />
                 </td>
                 <td className="px-3 py-2.5 text-text-secondary">{p.strategy || "-"}</td>

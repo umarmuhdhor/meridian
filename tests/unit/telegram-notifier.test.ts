@@ -68,6 +68,8 @@ describe("createTelegramNotifier — outbound events", () => {
     expect(text).toContain("bid_ask");
     expect(text).toContain("100..200");
     expect(text).toContain("SIG_1");
+    // Meteora deep link for one-tap open
+    expect(text).toContain("https://www.meteora.ag/dlmm/PoolAaaa?referrer=portfolio");
   });
 
   it("marks dry-run results with [DRY]", async () => {
