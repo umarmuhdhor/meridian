@@ -40,9 +40,18 @@ export function createOpenRouterLLMClient(opts: OpenRouterOptions): LLMClient {
       if (req.max_tokens !== undefined) body.max_tokens = req.max_tokens;
       const response = await client.chat.completions.create(body);
 
-      const first = response.choices[0];
+      // OpenRouter can return HTTP 200 with an error object (rate limit, provider
+      // down, context too long, moderation) and NO `choices` field. Reading
+      // response.choices[0] then throws a cryptic "Cannot read properties of
+      // undefined (reading '0')" that aborts the whole cycle. Guard + surface the
+      // real provider error so the next cycle's log is actionable.
+      const first = response.choices?.[0];
       if (!first) {
-        throw new Error("LLM returned no choices");
+        const errObj = (response as { error?: { message?: string; code?: string | number } }).error;
+        const detail = errObj?.message
+          ? `provider error${errObj.code != null ? ` (${errObj.code})` : ""}: ${errObj.message}`
+          : JSON.stringify(response).slice(0, 300);
+        throw new Error(`LLM returned no choices — ${detail}`);
       }
       const msg = first.message;
       const toolCalls: ToolCallRequest[] = (msg.tool_calls ?? []).flatMap((tc) => {
