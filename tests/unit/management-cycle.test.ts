@@ -9,7 +9,29 @@ import { claimFeesTool } from "../../src/app/tools/impls/claim-fees.js";
 import { getMyPositionsTool } from "../../src/app/tools/impls/get-my-positions.js";
 import { getWalletBalanceTool } from "../../src/app/tools/impls/get-wallet-balance.js";
 import type { OnChainPosition } from "../../src/domain/schemas/chain.js";
+import type { TrackedPosition } from "../../src/domain/schemas/position.js";
+import type { PositionRepo } from "../../src/ports/position-repo.js";
 import { makeCtx } from "./tool-context.js";
+
+function statefulPositionRepo(): PositionRepo {
+  const store = new Map<string, TrackedPosition>();
+  return {
+    async load() {
+      return { ok: true, value: { positions: {}, recentEvents: [], lastUpdated: null } };
+    },
+    async save() {},
+    async pushEvent() {},
+    async get(a) {
+      return store.get(a) ?? null;
+    },
+    async all() {
+      return [...store.values()];
+    },
+    async upsert(p) {
+      store.set(p.position, p);
+    },
+  };
+}
 import { mgmt } from "./fixtures.js";
 
 const REGISTRY = createRegistry([
@@ -86,6 +108,24 @@ describe("runManagementCycle", () => {
     const r = await runManagementCycle({ ctx, llm, registry: REGISTRY, model: "test" });
     expect(r.kind).toBe("all_stay");
     if (r.kind === "all_stay") expect(r.positions).toBe(1);
+  });
+
+  it("reconciles an untracked on-chain position into the tracking store", async () => {
+    const chain = createDryRunChainClient({
+      clock: CLOCK,
+      seed: { positions: [pos({ pnl_pct: 1, unclaimed_fees_usd: 0 })] },
+    });
+    const positions = statefulPositionRepo();
+    const ctx = makeCtx({ chain, repos: { positions } });
+    const llm = createFakeLLM({ script: [] }); // all STAY → LLM never invoked
+    expect(await positions.all()).toHaveLength(0);
+    await runManagementCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    const tracked = await positions.all();
+    expect(tracked).toHaveLength(1);
+    expect(tracked[0]?.position).toBe("posA");
+    expect(tracked[0]?.pool).toBe("poolA");
+    expect(tracked[0]?.closed).toBe(false);
+    expect(tracked[0]?.deployed_at).toBeTruthy();
   });
 
   it("invoked: agent runs and closes stop-loss position", async () => {

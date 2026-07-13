@@ -8,6 +8,7 @@ import { tokenBlacklistGate } from "../safety/token-blacklist.js";
 import { deployerBlocklistGate } from "../safety/deployer-blocklist.js";
 import { logDeployDecision } from "../post/log-decision.js";
 import { notifyDeployHook } from "../post/notify.js";
+import { trackDeployedPosition } from "../post/track-position.js";
 
 const ArgsSchema = z.object({
   pool_address: z.string().min(1),
@@ -37,7 +38,7 @@ export const deployPositionTool = defineTool({
   oncePerSession: true,
   noRetry: true,
   safety: [poolCooldownGate, tokenBlacklistGate, deployerBlocklistGate, walletBalanceGate, maxPositionsGate],
-  post: [notifyDeployHook, logDeployDecision("SCREENER")],
+  post: [trackDeployedPosition(), notifyDeployHook, logDeployDecision("SCREENER")],
   execute: async (args, ctx) => {
     return ctx.chain.deployPosition({
       pool_address: args.pool_address,

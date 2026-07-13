@@ -94,6 +94,43 @@ export async function runManagementCycle(deps: ManagementCycleDeps): Promise<Man
     return { kind: "no_positions" };
   }
 
+  // Self-heal: persist any on-chain position missing from the tracking store so
+  // trailing-TP (needs stored peak) + age/low-yield rules (need deployed_at) work.
+  // deploy_position tracks new deploys directly; this covers pre-fix positions and
+  // any edge case where the deploy hook didn't run. Uses snapshot metadata where the
+  // datapi provides it; deployed_at falls back to first-seen time.
+  for (const p of snap.positions) {
+    if (await ctx.repos.positions.get(p.position)) continue;
+    const nowIso = ctx.clock.now().toISOString();
+    await ctx.repos.positions.upsert({
+      position: p.position,
+      pool: p.pool,
+      pool_name: p.pair,
+      strategy: p.strategy ?? ctx.config.strategy.strategy,
+      bin_range: { lower_bin: p.lower_bin, upper_bin: p.upper_bin },
+      amount_sol: p.amount_sol ?? 0,
+      amount_x: 0,
+      active_bin_at_deploy: p.active_bin,
+      bin_step: p.bin_step ?? null,
+      volatility: null,
+      fee_tvl_ratio: null,
+      initial_fee_tvl_24h: p.fee_per_tvl_24h ?? null,
+      organic_score: null,
+      initial_value_usd: p.total_value_usd ?? null,
+      deployed_at: p.deployed_at ?? nowIso,
+      out_of_range_since: null,
+      last_claim_at: null,
+      total_fees_claimed_usd: 0,
+      rebalance_count: 0,
+      closed: false,
+      closed_at: null,
+      notes: ["reconciled from chain (untracked on-chain position)"],
+      peak_pnl_pct: 0,
+      trailing_active: false,
+    });
+    ctx.logger.info("management", `reconciled untracked position ${p.position.slice(0, 8)} into state`);
+  }
+
   const plans = snap.positions.map((p) => planForPosition(p, ctx));
   const anyAction = plans.some((p) => p.action !== "STAY");
   if (!anyAction) {

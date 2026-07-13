@@ -10,10 +10,35 @@ import { createDryRunChainClient } from "../../src/adapters/chain/dry-run.js";
 import { createCollectingNotifier } from "../../src/adapters/notify/collecting-notifier.js";
 import { fixedClock } from "../../src/ports/clock.js";
 import type { PoolMemoryEntry } from "../../src/domain/schemas/pool-memory.js";
-import { makeCtx, memPoolMemoryRepo, memPositionRepo, memLessonRepo, memDecisionLog, memStrategyRepo, memSmartWalletRepo, memTokenBlacklistRepo, memSwapClient } from "./tool-context.js";
+import type { TrackedPosition } from "../../src/domain/schemas/position.js";
+import type { PositionRepo } from "../../src/ports/position-repo.js";
+import { makeCtx, memPoolMemoryRepo, memLessonRepo, memDecisionLog, memStrategyRepo, memSmartWalletRepo, memTokenBlacklistRepo, memSwapClient } from "./tool-context.js";
 
 const NOW = "2026-07-05T12:00:00.000Z";
 const FUTURE = "2026-07-05T18:00:00.000Z";
+
+// Stateful in-memory position repo so post-deploy persistence is observable
+// (the shared memPositionRepo() is a no-op stub).
+function statefulPositionRepo(): PositionRepo {
+  const store = new Map<string, TrackedPosition>();
+  return {
+    async load() {
+      return { ok: true, value: { positions: Object.fromEntries(store), recentEvents: [], lastUpdated: null } };
+    },
+    async save() {},
+    async get(addr) {
+      return store.get(addr) ?? null;
+    },
+    async all(openOnly) {
+      const xs = [...store.values()];
+      return openOnly ? xs.filter((x) => !x.closed) : xs;
+    },
+    async upsert(pos) {
+      store.set(pos.position, pos);
+    },
+    async pushEvent() {},
+  };
+}
 
 function fullyMemCtx(over: {
   walletSol?: number;
@@ -30,7 +55,7 @@ function fullyMemCtx(over: {
       swap: memSwapClient(),
       notifier,
       repos: {
-        positions: memPositionRepo(),
+        positions: statefulPositionRepo(),
         poolMemory: memPoolMemoryRepo(over.poolMemory ?? {}),
         lessons: memLessonRepo(),
         decisions,
@@ -69,6 +94,12 @@ describe("deploy_position — safety chain + post-hooks", () => {
     // wallet decremented
     const b = await chain.getWalletBalance();
     expect(b.sol).toBe(4.5);
+    // position persisted to the tracking store (trailing-TP / age rules depend on it)
+    const tracked = await ctx.repos.positions.all();
+    expect(tracked).toHaveLength(1);
+    expect(tracked[0]?.strategy).toBe("bid_ask");
+    expect(tracked[0]?.pool_name).toBe("TKN/SOL");
+    expect(tracked[0]?.closed).toBe(false);
   });
 
   it("blocked by pool cooldown → no notify, no decision, no wallet change", async () => {
