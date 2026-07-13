@@ -99,6 +99,41 @@ describe("createMeteoraPoolDiscovery.discover", () => {
     expect(p.bin_step).toBe(100);
   });
 
+  it("normalizes the nested datapi shape (token_x/token_y/dlmm_params)", async () => {
+    // Meteora's 2026-07 response nests token + bin-step fields; regression guard for
+    // the silent scanned:0 outage caused by reading only the legacy flat keys.
+    const nested = {
+      pool_address: "PoolNestedaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      name: "NEST/SOL",
+      tvl: 33000,
+      volume: 811525,
+      fee_active_tvl_ratio: 0.3,
+      fee_tvl_ratio: 0.28,
+      volatility: 0.05,
+      active_positions_pct: 46,
+      dlmm_params: { bin_step: 100, collect_fee_mode: "both" },
+      token_x: {
+        address: "NestMint1111111111111111111111111111111111",
+        organic_score: 90,
+        holders: 10306,
+        market_cap: 2933449,
+        created_at: 1_720_000_000_000,
+      },
+      token_y: { address: "So11111111111111111111111111111111111111112" },
+    };
+    const fetchImpl = vi.fn<FetchImpl>(async () => jsonRes({ data: [nested] }));
+    const client = createMeteoraPoolDiscovery({ logger: nullLogger, screening, now, fetchImpl });
+    const pools = await client.discover();
+    expect(pools).toHaveLength(1);
+    const p = pools[0]!;
+    expect(p.base_mint).toBe("NestMint1111111111111111111111111111111111");
+    expect(p.quote_mint).toBe("So11111111111111111111111111111111111111112");
+    expect(p.organic_score).toBe(90);
+    expect(p.holders).toBe(10306);
+    expect(p.mcap).toBe(2933449);
+    expect(p.bin_step).toBe(100);
+  });
+
   it("adds allowedLaunchpads filter when set", async () => {
     const fetchImpl = vi.fn<FetchImpl>(async (url: string) => {
       const decoded = decodeURIComponent(url.split("filter_by=")[1]!.split("&")[0]!);

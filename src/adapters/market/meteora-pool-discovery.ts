@@ -26,10 +26,30 @@ export type FetchImpl = (
   text: () => Promise<string>;
 }>;
 
+// Meteora datapi (2026-07) nests token + DLMM fields under `token_x`/`token_y`/
+// `dlmm_params`. Older shapes used flat `base_token_*` / `dlmm_bin_step` keys.
+// normalize() reads nested-first, flat-fallback, so both response generations work.
+const RawTokenSchema = z
+  .object({
+    address: z.string().optional(),
+    organic_score: z.union([z.number(), z.string()]).optional(),
+    holders: z.union([z.number(), z.string()]).optional(),
+    market_cap: z.union([z.number(), z.string()]).optional(),
+    created_at: z.union([z.number(), z.string()]).nullable().optional(),
+  })
+  .passthrough();
+
 const RawPoolSchema = z
   .object({
     pool_address: z.string().optional(),
     name: z.string().optional(),
+    token_x: RawTokenSchema.optional(),
+    token_y: RawTokenSchema.optional(),
+    dlmm_params: z
+      .object({ bin_step: z.union([z.number(), z.string()]).optional() })
+      .passthrough()
+      .optional(),
+    active_positions_pct: z.union([z.number(), z.string()]).nullable().optional(),
     base_token_mint: z.string().optional(),
     quote_token_mint: z.string().optional(),
     base_mint: z.string().optional(),
@@ -162,11 +182,13 @@ export function createMeteoraPoolDiscovery(
   }
 
   function normalize(raw: z.infer<typeof RawPoolSchema>): CandidatePool | null {
-    const baseMint = raw.base_token_mint ?? raw.base_mint;
-    const quoteMint = raw.quote_token_mint ?? raw.quote_mint;
+    // Resolve each field nested-first (current datapi), then flat (legacy shape).
+    const baseMint = raw.token_x?.address ?? raw.base_token_mint ?? raw.base_mint;
+    const quoteMint = raw.token_y?.address ?? raw.quote_token_mint ?? raw.quote_mint;
     if (!baseMint || !raw.pool_address) return null;
     const poolAddress = raw.pool_address;
     const nowMs = opts.now().getTime();
+    const createdAt = raw.token_x?.created_at ?? raw.base_token_created_at;
     const parsed = CandidatePoolSchema.safeParse({
       pool_address: poolAddress,
       name: raw.name ?? `${baseMint.slice(0, 4)}/${(quoteMint ?? "?").slice(0, 4)}`,
@@ -177,16 +199,17 @@ export function createMeteoraPoolDiscovery(
       volume_window: num(raw.volume_window) ?? num(raw.volume) ?? 0,
       fee_active_tvl_ratio: num(raw.fee_active_tvl_ratio),
       fee_tvl_ratio: num(raw.fee_tvl_ratio),
-      organic_score: num(raw.base_token_organic_score) ?? num(raw.organic_score),
-      holders: num(raw.base_token_holders) ?? num(raw.holders),
-      mcap: num(raw.base_token_market_cap) ?? num(raw.mcap),
-      bin_step: num(raw.dlmm_bin_step) ?? num(raw.bin_step),
+      organic_score:
+        num(raw.token_x?.organic_score) ??
+        num(raw.base_token_organic_score) ??
+        num(raw.organic_score),
+      holders: num(raw.base_token_holders) ?? num(raw.token_x?.holders) ?? num(raw.holders),
+      mcap: num(raw.token_x?.market_cap) ?? num(raw.base_token_market_cap) ?? num(raw.mcap),
+      bin_step: num(raw.dlmm_params?.bin_step) ?? num(raw.dlmm_bin_step) ?? num(raw.bin_step),
       volatility: num(raw.volatility),
       launchpad: raw.base_token_launchpad ?? raw.launchpad ?? null,
-      token_age_hours:
-        ageHoursFromCreatedAt(raw.base_token_created_at, nowMs) ??
-        numOrNull(raw.token_age_hours),
-      active_pct: numOrNull(raw.active_pct),
+      token_age_hours: ageHoursFromCreatedAt(createdAt, nowMs) ?? numOrNull(raw.token_age_hours),
+      active_pct: numOrNull(raw.active_pct) ?? numOrNull(raw.active_positions_pct),
     });
     if (!parsed.success) {
       opts.logger.warn("meteora-discovery", `normalize failed for ${poolAddress.slice(0, 8)}`, {
