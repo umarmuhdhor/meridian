@@ -7,6 +7,7 @@ import http from "node:http";
 import type { AppContext } from "../../app/tools/context.js";
 import type { ToolRegistry } from "../../app/tools/registry.js";
 import type { LLMClient } from "../../ports/llm-client.js";
+import type { LogStore } from "../logger/ring-buffer-logger.js";
 import { isAuthorized } from "./auth.js";
 import { handleRequest } from "./routes.js";
 import { createSseHub } from "./sse.js";
@@ -26,6 +27,8 @@ export interface BridgeDeps {
   model: string;
   /** Directory holding the JSON state files (GET /state/file/:name). */
   stateDir: string;
+  /** In-memory daemon log ring for GET /logs. Optional — omitted → /logs returns empty. */
+  logStore?: LogStore | undefined;
 }
 
 export interface BridgeHandle {

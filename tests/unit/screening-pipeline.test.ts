@@ -9,14 +9,15 @@ import {
 } from "../../src/domain/rules/screening.js";
 import type { AppConfig } from "../../src/domain/schemas/config.js";
 import type { CandidatePool } from "../../src/domain/schemas/market.js";
-import { mgmt } from "./fixtures.js";
+import { mgmt, screening } from "./fixtures.js";
 
-const config: AppConfig = {
+const config = {
   risk: { maxPositions: 3, maxDeployAmount: 50 },
   management: mgmt,
   strategy: { strategy: "bid_ask", minBinsBelow: 35, maxBinsBelow: 69, defaultBinsBelow: 69 },
   schedule: { managementIntervalMin: 10, screeningIntervalMin: 30, healthCheckIntervalMin: 60 },
-};
+  screening,
+} as unknown as AppConfig;
 
 function pool(over: Partial<CandidatePool> = {}): CandidatePool {
   return {

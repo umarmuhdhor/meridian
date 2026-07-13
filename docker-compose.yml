@@ -55,6 +55,11 @@ services:
       - NODE_ENV=production
     volumes:
       - /home/ubuntu/meridian-data:/opt/data
+      # The daemon keeps its live config at cwd (/app/user-config.json), NOT in
+      # the state volume — so MERIDIAN_ROOT=/opt/data can't see it and the Config
+      # page renders blank. Mount the SAME host file the daemon uses (read-only;
+      # dashboard edits write back via the bridge → daemon, not this path).
+      - /home/ubuntu/meridian/user-config.json:/opt/data/user-config.json:ro
     # Share the daemon's network namespace so the dashboard reaches the
     # localhost-only bridge (127.0.0.1:8787) and listens on :3000 there.
     network_mode: "service:meridian"

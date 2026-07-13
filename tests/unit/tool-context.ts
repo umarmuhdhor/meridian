@@ -22,14 +22,15 @@ import { createFakeTokenInfo } from "../../src/adapters/market/fake-token-info.j
 import { createFakeRugCheck } from "../../src/adapters/market/fake-rug-check.js";
 import { createFakeSmartWalletChecker } from "../../src/adapters/market/fake-smart-wallet-checker.js";
 import { createFakeStudy } from "../../src/adapters/market/fake-study.js";
-import { mgmt } from "./fixtures.js";
+import { mgmt, screening } from "./fixtures.js";
 
-const cfg: AppConfig = {
+const cfg = {
   risk: { maxPositions: 3, maxDeployAmount: 50 },
   management: mgmt,
   strategy: { strategy: "bid_ask", minBinsBelow: 35, maxBinsBelow: 69, defaultBinsBelow: 69 },
   schedule: { managementIntervalMin: 10, screeningIntervalMin: 30, healthCheckIntervalMin: 60 },
-};
+  screening,
+} as unknown as AppConfig;
 
 /** In-memory PoolMemoryRepo — no filesystem. */
 export function memPoolMemoryRepo(seed: Record<string, PoolMemoryEntry> = {}): PoolMemoryRepo {

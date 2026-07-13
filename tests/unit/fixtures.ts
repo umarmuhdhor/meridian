@@ -1,4 +1,4 @@
-import type { ManagementConfig } from "../../src/domain/schemas/config.js";
+import type { ManagementConfig, ScreeningConfig } from "../../src/domain/schemas/config.js";
 import type { LivePositionSnapshot, TrackedPosition } from "../../src/domain/schemas/position.js";
 
 export const mgmt: ManagementConfig = {
@@ -25,6 +25,37 @@ export const mgmt: ManagementConfig = {
   repeatDeployCooldownHours: 12,
   repeatDeployCooldownScope: "token",
   repeatDeployCooldownMinFeeEarnedPct: 1.5,
+};
+
+// Threshold values here mirror the former inline `defaultThresholds` constants so
+// the hardFilter branch tests keep asserting the same pass/reject boundaries now
+// that thresholds come from config.screening.
+export const screening: ScreeningConfig = {
+  excludeHighSupplyConcentration: false,
+  minFeeActiveTvlRatio: 0.05,
+  minTvl: 10_000,
+  maxTvl: 150_000,
+  minVolume: 500,
+  minOrganic: 60,
+  minQuoteOrganic: 0,
+  minHolders: 500,
+  minMcap: 150_000,
+  maxMcap: 10_000_000,
+  minBinStep: 80,
+  maxBinStep: 125,
+  timeframe: "24h",
+  category: "",
+  minTokenFeesSol: 0,
+  useDiscordSignals: false,
+  discordSignalMode: "merge",
+  avoidPvpSymbols: false,
+  blockPvpSymbols: false,
+  maxBotHoldersPct: 30,
+  maxTop10Pct: 60,
+  allowedLaunchpads: [],
+  blockedLaunchpads: [],
+  minTokenAgeHours: null,
+  maxTokenAgeHours: null,
 };
 
 export function makeLive(overrides: Partial<LivePositionSnapshot> = {}): LivePositionSnapshot {

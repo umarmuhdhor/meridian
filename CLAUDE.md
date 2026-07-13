@@ -115,9 +115,10 @@ config + selects adapters + builds `AppContext`; `main()` (L410-606) wires cron/
 - `rules/deploy-planning.ts:55` `planDeploy` — pure bin-range validator. Single-side
   SOL only (`amountX` must be 0), total bins ≥ `MIN_SAFE_BINS_BELOW` (35),
   `WIDE_RANGE_THRESHOLD` = 69 flags the multi-tx path.
-- `rules/screening.ts:84` `hardFilter` + `rankCandidates`. **`defaultThresholds`
-  currently ignores `AppConfig`** (`void cfg`) — a config-drift footgun (changing
-  `minTvl` etc. in user-config doesn't reach the pure screener yet).
+- `rules/screening.ts:84` `hardFilter` + `rankCandidates`. `defaultThresholds`
+  reads straight from `cfg.screening.*`, so `user-config.json` (and live dashboard
+  Config edits, applied in-place by `update_config`) drive the hard filter. (Was
+  a `void cfg` no-op until 2026-07-13 — that config-drift footgun is fixed.)
 - `rules/scoring.ts:14`, `rules/cooldown.ts:7` (`isPoolOnCooldown`/`isBaseMintOnCooldown`).
 - `schemas/` (14) — `config.ts`/`config-flat.ts`, `position.ts` (TrackedPosition +
   LivePositionSnapshot), `chain.ts`, `market.ts`, `pool-memory.ts`, `strategy.ts`,
@@ -379,8 +380,11 @@ allowlist) is upstream** (the inbound adapter), not in the router.
 ## Known issues / gotchas (verified against the code)
 
 - **`DRY_RUN` is not a gate** in TS — only `MERIDIAN_CHAIN` + `MERIDIAN_WRITE_UNSAFE`.
-- **`rules/screening.ts` `defaultThresholds` ignores `AppConfig`** (`void cfg`) — screening
-  threshold changes in `user-config.json` don't reach the pure screener until wired.
+- **Config path vs web read-path divergence**: the daemon loads config from cwd
+  (`/app/user-config.json`), but the web container reads `MERIDIAN_ROOT=/opt/data`.
+  `docker-compose.yml` bind-mounts the same host config file into the web container
+  at `/opt/data/user-config.json` (ro) so the Config page isn't blank — keep that
+  mount in sync if either path moves.
 - **Provider fallback / system-role / tool-choice retry are decorators, not wired by
   default** — `daemon.ts` uses `createOpenRouterLLMClient` directly. Wrap it if you need resilience.
 - **`role` is label-only**; the `activeRegistry` ternary in the loop is a dead no-op —

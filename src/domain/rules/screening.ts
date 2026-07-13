@@ -21,26 +21,31 @@ export interface ScreeningThresholds {
   blockedLaunchpads: readonly string[];
 }
 
-/** Extract screening thresholds from AppConfig — for now defaults live inline; full config lands with Phase 8 screening config schema. */
+/**
+ * Extract screening thresholds from AppConfig. Reads straight from `cfg.screening.*`
+ * so the live user-config (and dashboard Config edits) actually drive the hard filter.
+ * Previously this ignored `cfg` and returned inline constants — a config-drift footgun
+ * that made every screening dial in the dashboard a no-op.
+ */
 export function defaultThresholds(cfg: AppConfig): ScreeningThresholds {
-  void cfg;
+  const s = cfg.screening;
   return {
-    minTvl: 10_000,
-    maxTvl: 150_000,
-    minVolume: 500,
-    minOrganic: 60,
-    minHolders: 500,
-    minMcap: 150_000,
-    maxMcap: 10_000_000,
-    minBinStep: 80,
-    maxBinStep: 125,
-    minFeeActiveTvlRatio: 0.05,
-    maxBotHoldersPct: 30,
-    maxTop10Pct: 60,
-    minTokenAgeHours: null,
-    maxTokenAgeHours: null,
-    allowedLaunchpads: [],
-    blockedLaunchpads: [],
+    minTvl: s.minTvl,
+    maxTvl: s.maxTvl,
+    minVolume: s.minVolume,
+    minOrganic: s.minOrganic,
+    minHolders: s.minHolders,
+    minMcap: s.minMcap,
+    maxMcap: s.maxMcap,
+    minBinStep: s.minBinStep,
+    maxBinStep: s.maxBinStep,
+    minFeeActiveTvlRatio: s.minFeeActiveTvlRatio,
+    maxBotHoldersPct: s.maxBotHoldersPct,
+    maxTop10Pct: s.maxTop10Pct,
+    minTokenAgeHours: s.minTokenAgeHours,
+    maxTokenAgeHours: s.maxTokenAgeHours,
+    allowedLaunchpads: s.allowedLaunchpads,
+    blockedLaunchpads: s.blockedLaunchpads,
   };
 }
 

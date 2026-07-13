@@ -113,6 +113,17 @@ export async function handleRequest(
     return; // keep the connection open — do NOT json()/end
   }
 
+  // ── GET /logs?limit=&level= (in-memory daemon log ring) ──────
+  if (req.method === "GET" && p === "/logs") {
+    const limRaw = Number(url.searchParams.get("limit"));
+    const limit = Number.isFinite(limRaw) ? Math.min(Math.max(limRaw, 1), 1000) : 200;
+    const lvl = url.searchParams.get("level");
+    const minLevel =
+      lvl === "debug" || lvl === "info" || lvl === "warn" || lvl === "error" ? lvl : "debug";
+    const lines = deps.logStore ? deps.logStore.get({ limit, minLevel }) : [];
+    return json(res, 200, { lines });
+  }
+
   // ── GET /state/summary ───────────────────────────────────────
   if (req.method === "GET" && p === "/state/summary") {
     const [summary, balance] = await Promise.all([

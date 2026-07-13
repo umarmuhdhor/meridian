@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fixedClock, systemClock } from "../ports/clock.js";
 import { createConsoleLogger } from "../adapters/logger/console.js";
+import { createRingBufferLogger, type LogStore } from "../adapters/logger/ring-buffer-logger.js";
 import { createJsonPositionRepo } from "../adapters/persistence/json/position-repo.js";
 import { createJsonPoolMemoryRepo } from "../adapters/persistence/json/pool-memory-repo.js";
 import { createJsonConfigRepo } from "../adapters/persistence/json/config-repo.js";
@@ -157,10 +158,13 @@ interface BootResult {
   ctx: AppContext;
   llm: LLMClient;
   usingDemoLLM: boolean;
+  logStore: LogStore;
 }
 
 async function boot(): Promise<BootResult> {
-  const logger = createConsoleLogger("info");
+  // Tee console logs into an in-memory ring so the dashboard /logs page can tail
+  // the daemon's own output (the web container can't read the daemon's PM2 files).
+  const { logger, store: logStore } = createRingBufferLogger(createConsoleLogger("info"));
   const clock = process.env.MERIDIAN_FROZEN_TIME
     ? fixedClock(process.env.MERIDIAN_FROZEN_TIME)
     : systemClock;
@@ -404,7 +408,7 @@ async function boot(): Promise<BootResult> {
         ...(process.env.LLM_BASE_URL ? { baseURL: process.env.LLM_BASE_URL } : {}),
       });
 
-  return { config: cfg.value, ctx, llm, usingDemoLLM: useDemo };
+  return { config: cfg.value, ctx, llm, usingDemoLLM: useDemo, logStore };
 }
 
 async function main(): Promise<void> {
@@ -415,7 +419,7 @@ async function main(): Promise<void> {
     console.error(`${banner}: boot failed:`, e);
     process.exit(1);
   });
-  const { ctx, llm, usingDemoLLM } = boot0;
+  const { ctx, llm, usingDemoLLM, logStore } = boot0;
 
   console.log(`${banner} boot ok @ ${startedAt}`);
   console.log(`  llm: ${usingDemoLLM ? "fake (demo)" : "openrouter"}`);
@@ -444,6 +448,7 @@ async function main(): Promise<void> {
         registry,
         model,
         stateDir: STATE_DIR,
+        logStore,
       });
     } catch (e) {
       ctx.logger.warn(
