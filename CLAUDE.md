@@ -5,458 +5,421 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 > **Audience**: future agents/sessions that need to make non-trivial changes
 > (add a tool, change a safety rule, fix a cron race, extend a state file)
 > without re-reading the whole repo. The README stays user-facing; this
-> file is the engineering manual.
+> file is the engineering manual for the **TypeScript codebase under `src/`**.
 
 ---
 
-## ⚠️ CURRENT STATE — READ BEFORE TRUSTING THE MODULE MAP BELOW
+## ⚠️ Read first
 
-Two things a new session must know first:
-
-1. **The live code is the TypeScript rewrite under `src/`.** Entry point is
-   `src/entrypoints/daemon.ts` → built to `dist/entrypoints/daemon.js`. The
-   detailed module map further down this file (`index.js`, `agent/agent.js`,
-   `tools/`, `persistence/`, `integrations/`, `file.js:NN` line refs) describes
-   the **retired legacy JS** architecture. The *concepts* still hold (roles, the
-   ReAct loop, safety checks, state files, cron cycles), but the *file paths are
-   `src/**` now*. Verify a path exists before citing it. A full rewrite of the
-   internals map to the TS layout is still pending — treat the map as conceptual.
-
-2. **Meridian is DEPLOYED and trading live.** It runs on a Tencent Hong Kong VPS
-   as 3 Docker containers, auto-deployed from the `dashboard` branch via GitHub
-   Actions → GHCR, with a public PIN-gated dashboard at `calisto.nafidinara.com`.
-   **The full operations manual is [`deploy/OPERATIONS.md`](deploy/OPERATIONS.md)**
-   — hosts, the deploy pipeline, secrets, config, dashboard auth, runbook,
-   troubleshooting, rollback. Read it before touching anything deploy-related.
-
-Anything about deployment/ops in the sections below is superseded by
-`deploy/OPERATIONS.md`.
+1. **Live code = the TypeScript rewrite under `src/`.** Entry point
+   `src/entrypoints/daemon.ts` → built to `dist/entrypoints/daemon.js`. There is
+   **no** `index.js` / `agent.js` / `tools/*.js` / `persistence/*.js` — the legacy
+   JS was retired (`legacy-js` git tag). Architecture is **hexagonal**:
+   `domain` (pure) → `ports` (interfaces) → `adapters` (implementations) →
+   `app` (use-cases) → `entrypoints` (DI wiring).
+2. **Meridian is deployed and trading live.** 3 Docker containers on a Tencent HK
+   VPS, auto-deployed from `dashboard` via GitHub Actions → GHCR, PIN-gated
+   dashboard at `calisto.nafidinara.com`. **All deploy/ops details live in
+   [`deploy/OPERATIONS.md`](deploy/OPERATIONS.md)** — this file is code internals only.
 
 ---
 
-## TL;DR (read this first)
+## TL;DR
 
-- **What it is**: Node 22+ ESM service that runs an LLM-driven loop
-  (OpenAI-compatible) to screen Meteora DLMM pools, deploy SOL into
-  long/short positions, monitor them, and close them — all without a human
-  in the loop. Telegram + Discord provide ops surface; HiveMind provides
-  shared learning.
-- **Entry points**: `node index.js` (full daemon — REPL + cron + Telegram),
-  `node cli.js <cmd>` (one-shot CLI), `node setup.js` (first-run wizard).
-- **Two agent roles run automatically**:
-  - `SCREENER` — every `screeningIntervalMin` minutes, picks a pool,
-    calls `deploy_position`.
-  - `MANAGER` — every `managementIntervalMin` minutes, evaluates open
-    positions, claims/closes them.
-- **`GENERAL`** role handles ad-hoc chat (REPL, Telegram, Claude Code
-  slash commands) and dispatches to a role-filtered tool subset based on
-  intent-pattern matching of the user's goal.
-- **All state lives in JSON files at the repo root** — see
-  [§ Persistent files](#persistent-files) below. There is no DB.
-- **"Always first read the rest of this file"** — there are real
-  cross-cutting invariants (lazy SDK load, ONCE_PER_SESSION tool locks,
-  position-cache TTL, trailing-TP 15s recheck) that are easy to break.
+- **What it is**: Node 22+ ESM service running an LLM-driven ReAct loop
+  (OpenAI-compatible) to screen Meteora DLMM pools, deploy SOL into positions,
+  monitor them, and close them without a human in the loop. Telegram is the ops
+  surface; a Next.js dashboard (behind the localhost bridge) is the web surface;
+  Agent Meridian HiveMind provides shared learning.
+- **Entry**: `node dist/entrypoints/daemon.js` (dev: `tsx watch src/entrypoints/daemon.ts`).
+  `MERIDIAN_AUTONOMOUS=true` → resident daemon (cron + Telegram); otherwise a
+  one-shot single screening cycle.
+- **Three agent roles** (labels; tool access enforced by `toolFilter`, not the role):
+  - `SCREENER` — every `screeningIntervalMin`, picks a pool, calls `deploy_position`.
+  - `MANAGER` — every `managementIntervalMin`, executes deterministic exit decisions.
+  - `GENERAL` — ad-hoc chat (Telegram free-form, dashboard `/chat`).
+- **State = JSON files** at `STATE_DIR` (default cwd), one repo per file, atomic writes.
+  No DB.
+- **The real safety gates are `MERIDIAN_CHAIN=meteora` + `MERIDIAN_WRITE_UNSAFE=true`.**
+  `DRY_RUN` is *not* consulted for gating in the TS code (it only surfaces as a
+  HiveMind capability flag). Getting this wrong = fake trading or, worse, an
+  unintended live write.
+- **Cross-cutting invariants that are easy to break**: lazy SDK load, `force:true`
+  on position reads, once-per-session tool locks (`deploy` = also `noRetry`),
+  trailing-TP two-phase 15s confirm, bridge binds `127.0.0.1` only. Details below.
 
 ---
 
 ## Architecture
 
 ```
-                ┌──────────────────────────────────────────────┐
-                │              index.js  (daemon)              │
-                │  REPL + cron + Telegram bot + PnL poller    │
-                │  Health check + briefing + HiveMind HB      │
-                └────────────┬─────────────────────────────────┘
-                             │
-            ┌────────────────┼────────────────────┐
-            ▼                ▼                    ▼
-       runScreeningCycle  runManagementCycle  cron (every N min)
-            │                │                    │
-            └────────┬───────┘                    │
-                     ▼                            │
-                 agentLoop() ◀────────────────────┘
-                  (ReAct)               (telegram / REPL messages)
-                     │
-                     ▼
-              buildSystemPrompt(role, …)  →  LLM  →  tool calls
-                                                       │
-                                                       ▼
-                                                executeTool(name, args)
-                                                       │
-                                                       ▼
-                                              PROTECTED_TOOLS →
-                                              runSafetyChecks()
-                                                       │
-                                                       ▼
-                                                toolMap[name](args)
-                                                       │
-                                  ┌────────────────────┴──────────┐
-                                  ▼                                ▼
-                       tools/dlmm.js (SDK)               tools/wallet.js (Jupiter)
-                       tools/screening.js                tools/token.js (Jupiter)
-                       tools/study.js (LPAgent)         tools/agent-meridian.js
-                                                      tools/chart-indicators.js
-                                  │                                │
-                                  └──────── on-chain + 3rd-party APIs ─┘
+ entrypoints/daemon.ts  (composition root: boot() wires ports→adapters, main() runs)
+        │
+        │ AppContext { clock, logger, config, chain, swap, notifier, market{5}, repos{8} }
+        ▼
+ ┌─────────────────────────── app/ (use-cases) ───────────────────────────┐
+ │  screening/cycle   management/cycle + pnl-poller   health   briefing    │
+ │  hivemind/sync     telegram/router                                       │
+ │            │                    │                                        │
+ │            └──────── agent/loop.ts  runAgentLoop() (ReAct) ──────────────┤
+ │                          │  buildSystemPrompt(role)  → LLMClient          │
+ │                          ▼                                                │
+ │              tools/execute.ts  executeTool(registry, call, ctx)          │
+ │                 parse(jsonrepair) → args.zod → safety[] → execute → post[]│
+ │                          │                                                │
+ │              tools/impls/*.ts  (~59 tools, one file each)                 │
+ └──────────────────────────┬──────────────────────────────────────────────┘
+        uses ports (interfaces)  │  implemented by adapters
+        ▼                        ▼
+ domain/ (pure: rules, schemas, prompt, config-load)     adapters/
+   rules: close-rules, pnl, exit-signals, scoring,          chain/meteora (real), chain/dry-run
+          cooldown, deploy-planning, screening              market/* (jupiter, meteora, rugcheck, + fakes)
+   schemas: 14 Zod shapes    ports/: 25 interfaces          persistence/json/* (9 repos, atomic)
+                                                            swap, llm(+decorators), notify, scheduler,
+                                                            logger, hivemind, dashboard (bridge)
 ```
 
-### Module responsibilities (read me before editing)
+Everything flows through `AppContext` (ports only — no concrete impls) assembled at
+boot in `src/app/tools/context.ts`. Adapters are selected by env in `daemon.ts`.
 
-> **Layout note (2026-07 reorg):** the repo root now holds only entry points (`index.js`, `cli.js`, `setup.js`) and the cross-cutting kernel (`repo-root.js`, `config.js`, `screening-scales.js`, `logger.js`, `state.js`, `envcrypt.js`). Former root modules moved into `agent/` (agent.js, prompt.js), `persistence/` (the JSON stores + signal trackers), and `integrations/` (telegram.js, hivemind.js, briefing.js). `logger.js` and `state.js` stay at root because the out-of-scope `dashboard/` imports them via `../../`. Inline `file.js:NN` line refs below still point at the same content, just under the new folder.
+### Layer map (read before editing)
 
-| File | Lines | Purpose |
-|---|---:|---|
-| **Entry / orchestration** | | |
-| `index.js` | ~2016 | Daemon. Cron, REPL, Telegram bot, briefing, HiveMind bootstrap, PnL poller, deterministic close rules, single-candidate skip rule, settings menu. **All** automatic cycles start here. |
-| `agent/agent.js` | 416 | `agentLoop(goal, maxSteps, history, agentType, model, maxOut, opts)`. The ReAct loop. Provider fallback, JSON repair, once-per-session tool locks, no-tool retries, `onToolStart`/`onToolFinish` callbacks for live Telegram messages. |
-| `cli.js` | 676 | One-shot CLI; every tool exposed as a subcommand. Also writes a `~/.meridian/SKILL.md` at startup for agent discovery. Loads `.env`/`user-config.json` from `~/.meridian/` if present, else from cwd. |
-| `setup.js` | ~750 | Interactive first-run wizard. Three presets (degen/moderate/safe) + custom. Covers strategy, screening filters, position sizing, trailing TP, per-role models. |
-| **Config & state** | | |
-| `config.js` | 278 | Loads `user-config.json` → live `config` object. Sections: `risk`, `screening`, `management`, `strategy`, `schedule`, `llm`, `darwin`, `tokens`, `hiveMind`, `api`, `jupiter`, `indicators`. Exposes `computeDeployAmount(walletSol)`, `reloadScreeningThresholds()`. `MIN_SAFE_BINS_BELOW = 35` (exported). |
-| `agent/prompt.js` | 176 | `buildSystemPrompt(agentType, …)`. Three role-specific prompts. MANAGER is intentionally lean (positions pre-loaded into goal). SCREENER gets bins_below formula. |
-| **Tools layer** | | |
-| `tools/definitions.js` | 1124 | OpenAI-format tool schemas. **Source of truth for what the LLM sees.** All 40+ tool names listed. |
-| `tools/executor.js` | 844 | `executeTool(name, args)`. Pre-flight safety checks for `PROTECTED_TOOLS = {deploy, claim, close, swap, self_update}`. Validates pool thresholds via fresh pool discovery call before deploy. Post-tool side-effects: telegram notifications, pool-memory auto-annotation on `low yield` close, auto-swap base→SOL on close. |
-| `tools/dlmm.js` | huge | Meteora DLMM SDK wrapper. **Lazy-loads** `@meteora-ag/dlmm` to avoid CJS-import-time crash in DRY_RUN/test. Pool cache (5 min), metadata cache (15 min), positions cache (5 min TTL + inflight dedup). `deployPosition`, `getMyPositions`, `getPositionPnl`, `getActiveBin`, `closePosition`, `claimFees`, `searchPools`, `getWalletPositions`, `addLiquidity`, `withdrawLiquidity`. Also has relay-mode (zap-in via LPAgent) and wide-range path (multi-tx `createExtendedEmptyPosition` + `addLiquidityByStrategyChunkable` for >69 bin ranges). Asserts Meteora bin-array initialization rent never charged. |
-| `tools/screening.js` | 862 | `discoverPools`, `getTopCandidates` (hard filter + enrich + score), `getPoolDetail`. Scoring = `fee_tvl*1000 + organic*10 + vol/100 + holders/100`. Has Discord signal merge/only modes, PVP-rival detection. |
-| `tools/wallet.js` | 251 | `getWalletBalances` (Helius), `swapToken` (Jupiter Swap V2). `normalizeMint` collapses "SOL"/"native"/any So1-prefixed token to wrapped-SOL. Built-in referral: 50 bps to a fixed address (configurable). |
-| `tools/token.js` | 209 | `getTokenInfo` (Jupiter datapi), `getTokenHolders` (top 100 + filter pool-tagged), `getTokenNarrative` (Jupiter ChainInsight). Cross-references smart wallets from `smart-wallets.json`. |
-| `tools/study.js` | 152 | `studyTopLPers` → Agent Meridian `/top-lp` + `/study-top-lp`. Returns ranked LPer patterns (avg hold, win rate, preferred strategy). |
-| `tools/agent-meridian.js` | 110 | `agentMeridianJson(path, opts)` with retry/backoff. Default base = `https://api.agentmeridian.xyz/api`. |
-| `tools/chart-indicators.js` | 299 | `confirmIndicatorPreset({mint, side})`. Eight presets: `supertrend_break`, `rsi_reversal`, `bollinger_reversion`, `rsi_plus_supertrend`, `supertrend_or_rsi`, `bb_plus_rsi`, `fibo_reclaim`, `fibo_reject`. Fetches from Agent Meridian `/chart-indicators/{mint}`. |
-| **Persistence (all `.json` at repo root)** | | |
-| `state.js` | 513 | `trackPosition`, `markOutOfRange/InRange`, `recordClaim`, `recordClose`, `setPositionInstruction`, `updatePnlAndCheckExits` (the deterministic rules: STOP_LOSS, TRAILING_TP, OUT_OF_RANGE, LOW_YIELD), `getStateSummary`. `syncOpenPositions` reconciles local state with on-chain after 5 min grace. |
-| `persistence/pool-memory.js` | 405 | Per-pool deploy history + rolling 48-snapshot trend (5min × 4h). Computes `avg_pnl_pct`, `win_rate`, `adjusted_win_rate` (excludes OOR pumps). Cooldown logic: low yield → 4h pool cooldown, 3× OOR closes → 12h pool+token cooldown, optional repeat-deploy cooldown (configurable trigger count/hours/min fee yield/scope). `recordPositionSnapshot`, `recallForPool` for prompt injection. |
-| `persistence/lessons.js` | 765 | `recordPerformance(perf)` called by executor after `close_position`. Builds lesson string (PREFER/AVOID/WORKED/FAILED). Pinned + role-tagged lesson injection (3-tier cap: PINNED, ROLE, RECENT) with `ROLE_TAGS` map. `evolveThresholds` adjusts `minOrganic` (auto), and writes `[AUTO-EVOLVED @ N]` lesson + applies to live `config`. **Known bug: also references `maxVolatility` and `minFeeTvlRatio` which don't exist in config — no-op for those keys.** `pushHiveLesson`/`pushHivePerformanceEvent` are fire-and-forget. |
-| `persistence/decision-log.js` | 68 | Rolling 100-entry log. Types: `deploy` / `close` / `skip` / `no_deploy`. Each entry: actor, pool, summary, reason, risks[], metrics{}, rejected[]. Surfaced via `get_recent_decisions` tool and `getDecisionSummary()` in the prompt. |
-| `persistence/signal-tracker.js` | 87 | In-memory 10-min staging for screening-time signals (`organic_score`, `fee_tvl_ratio`, …). Cleared on deploy or TTL. **Not persisted** — fine because the staged snapshot is also written to `state.json` via `trackPosition({ signal_snapshot })`. |
-| `persistence/signal-weights.js` | 330 | Darwinian signal weighting. Recalculates every 5 closes (or 10-sample min). Splits signals into quartiles; top → `weight*1.05`, bottom → `weight*0.95`. Persists `signal-weights.json`. `getWeightsSummary()` injected into SCREENER prompt. |
-| `persistence/strategy-library.js` | 227 | Saved LP strategies. Five defaults preloaded: `custom_ratio_spot`, `single_sided_reseed`, `fee_compounding`, `multi_layer`, `partial_harvest`. `getActiveStrategy()` → used in SCREENER prompt. |
-| `persistence/smart-wallets.js` | 103 | Tracked KOL/alpha wallets. `type: "lp"` (default) checks positions; `type: "holder"` only checks token holdings. 5-min position cache. `check_smart_wallets_on_pool` is the deployment confidence signal. |
-| `persistence/token-blacklist.js` | 103 | Mint → reason. Hard-filtered before LLM in `getTopCandidates`. |
-| `persistence/dev-blocklist.js` | 66 | Deployer wallet → reason. Hard-filtered before LLM, fetched from Jupiter dev field. |
-| `integrations/hivemind.js` | 346 | Agent Meridian shared learning. `bootstrapHiveMind` on startup, `startHiveMindBackgroundSync` every 15 min. Pushes lessons + performance events; pulls shared lessons + presets. `getSharedLessonsForPrompt` → injected under `── HIVEMIND ──` in prompt. Failures are non-blocking. |
-| **Integrations** | | |
-| `integrations/telegram.js` | 494 | `startPolling(onMessage)`, `stopPolling()`. Long-poll with 35s abort. `createLiveMessage` returns a handle with `toolStart/toolFinish/note/finalize/fail` for live progress. Sends deploy/close/swap/OOR notifications. Auth: `isAuthorizedIncomingMessage` (chatId match + group→allowed user IDs). Registers `/help` `/status` `/positions` `/close` `/closeall` `/set` `/settings` `/setcfg` `/screen` `/candidates` `/deploy` `/briefing` `/hive` `/pause` `/resume` `/stop` via `setMyCommands`. |
-| `discord-listener/index.js` | 152 | Selfbot (uses `discord.js-selfbot-v13`). Listens to `DISCORD_CHANNEL_IDS` for `Metlex Pool Bot`, extracts Solana addresses, runs pre-check pipeline, appends to `discord-signals.json`. |
-| `discord-listener/pre-checks.js` | 205 | Pipeline: dedup (10min) → blacklist → pool resolution (Meteora direct → DexScreener) → rugcheck.xyz (score>50000 OR top10>60% reject) → deployer blacklist → Jupiter global fees check (`minTokenFeesSol`). |
-| `integrations/briefing.js` | 71 | HTML daily report. 24h activity, performance, lessons, current portfolio. Sent at 1:00 UTC. |
-| `envcrypt.js` | 121 | XOR-cipher with a key from `.envrypt`/`ENVRYPT_KEY`. Encrypts anything matching `*_KEY`, `*SECRET*`, `*TOKEN*`, `*MNEMONIC*`, etc. The `# encrypted` marker in `.env` precedes encrypted lines. |
-| `logger.js` | 75 | Daily-rotating `logs/agent-YYYY-MM-DD.log`. `logAction({tool, args, result, duration_ms, success})` writes JSONL `actions-YYYY-MM-DD.jsonl` audit trail. Level via `LOG_LEVEL` env. |
-| **Other** | | |
-| `discord-listener/`, `test/`, `scripts/`, `utils/` | | Discord listener (above), syntax-checked tests, envcrypt CLI, `safeNumber`. |
-| `.claude/agents/{screener,manager}.md` | | Claude Code sub-agent configs — used when you run `claude` inside the repo. |
-| `.claude/commands/*.md` | | Slash commands (`/screen`, `/manage`, `/balance`, `/candidates`, `/pool-ohlcv`, etc.) that wrap `cli.js`. |
-| `.claude/settings.json` | | Denies `rm -rf`, `wget`, `Read(./.env*)`. **Forbids `run_in_background: true` via a PreToolUse hook.** |
+**`src/entrypoints/daemon.ts`** (611) — composition root. `boot()` (L162-408) loads
+config + selects adapters + builds `AppContext`; `main()` (L410-606) wires cron/modes.
+- **Adapter selection cascade** (env-driven, defaults chain off each other):
+  `MERIDIAN_CHAIN` (`dryrun`|`meteora`, default dryrun, L193) → meteora requires
+  `RPC_URL`+`WALLET_PRIVATE_KEY` (throws if missing). `MERIDIAN_PRICE` defaults
+  `jupiter` when chain=meteora else `static` (L194). `MERIDIAN_MARKET` defaults
+  `real` when chain=meteora else `fake` (L284); selects 5 market ports
+  independently. LLM: `MERIDIAN_DEMO=true` or no key → fake LLM; else OpenRouter.
+  Notifier: telegram if `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID` else collecting.
+- **Write arming**: `writesEnabled = MERIDIAN_WRITE_UNSAFE === "true"` (L227), passed
+  into the meteora chain client (the real gate lives in the adapter). Recomputed
+  in 3 places (L227, L512, L565) — keep consistent.
+- **`STATE_DIR`** = `MERIDIAN_STATE_DIR` ?? cwd (L101). Roots all 8 repos. Config
+  path uses cwd (`REPO_ROOT`), so config + state can diverge.
+- **Modes**: `MERIDIAN_AUTONOMOUS=true` → schedule cycles + Telegram inbound +
+  shutdown handlers, stay resident (L456). Else one-shot screening (L586).
+- **Dashboard bridge** started (both modes) only if `DASHBOARD_ENABLED=true`, via a
+  **dynamic import** (L438) inside try/catch — must never throw fatally.
+
+**`src/domain/`** — pure logic + Zod schemas, no I/O.
+- `rules/close-rules.ts:39` `getDeterministicCloseRule` — the **5 hard exit rules**
+  (stop-loss, take-profit, pumped-above-range, OOR-wait, low-yield); rules 1&2
+  suppressed when PnL is suspect.
+- `rules/pnl.ts:17` `assessPnl` — reported vs derived; **divergence is informational
+  only, does NOT gate exits** (deliberate — don't re-add gating). `pnl_pct_suspicious`
+  fires only when a tick is genuinely unpriceable.
+- `rules/exit-signals.ts:35` `evaluateExit` — stateful diff variant (flips
+  `trailing_active`, sets `out_of_range_since`, emits STOP_LOSS/TRAILING_TP/OOR/LOW_YIELD).
+- `rules/deploy-planning.ts:55` `planDeploy` — pure bin-range validator. Single-side
+  SOL only (`amountX` must be 0), total bins ≥ `MIN_SAFE_BINS_BELOW` (35),
+  `WIDE_RANGE_THRESHOLD` = 69 flags the multi-tx path.
+- `rules/screening.ts:84` `hardFilter` + `rankCandidates`. **`defaultThresholds`
+  currently ignores `AppConfig`** (`void cfg`) — a config-drift footgun (changing
+  `minTvl` etc. in user-config doesn't reach the pure screener yet).
+- `rules/scoring.ts:14`, `rules/cooldown.ts:7` (`isPoolOnCooldown`/`isBaseMintOnCooldown`).
+- `schemas/` (14) — `config.ts`/`config-flat.ts`, `position.ts` (TrackedPosition +
+  LivePositionSnapshot), `chain.ts`, `market.ts`, `pool-memory.ts`, `strategy.ts`,
+  `decision.ts` (MAX_DECISIONS=100), `lesson.ts`, `state.ts`, `study.ts`,
+  `smart-wallet.ts`, `blacklist.ts`, `dev-blocklist.ts`.
+- `prompt/builder.ts:95` `buildSystemPrompt(ctx)` — pure assembler; `roleInstructions`
+  = the 3 role prompts. `prompt/role-tools.ts` — `MANAGER_TOOLS`/`SCREENER_TOOLS`/`GENERAL_TOOLS`.
+- `config-load.ts:147` `parseAppConfig(raw): Result<AppConfig,…>` — two-stage Zod:
+  flat (`.passthrough()`) → `flatToNested` → nested. Never throws; returns a Result.
+
+**`src/ports/`** (25 interfaces) — the DI contracts. Chain/trading: `ChainClient`
+(writes return `{success}` in-band, never throw), `SwapClient`, `SolanaConnection`,
+`PriceOracle`. Market: `PoolDiscoveryClient`, `TokenInfoClient`, `RugCheckClient`,
+`SmartWalletChecker`, `StudyClient`. Persistence (all `load(): Result` + mutators):
+`ConfigRepo`, `PositionRepo`, `PoolMemoryRepo`, `DecisionLogRepo`, `LessonRepo`,
+`StrategyRepo`, `SmartWalletRepo`, `TokenBlacklistRepo`, `DevBlocklistRepo`. Also
+`LLMClient`, `Notifier`+`LiveMessageHandle`, `TelegramInbound`, `HiveMindClient`,
+`Clock`, `Scheduler`, `Logger`.
+
+**`src/adapters/`** — implementations.
+- `chain/meteora/connection.ts` — `loadWalletKeypair` accepts JSON byte-array OR
+  base58 (never base64); `createSolanaConnection` lazy-imports `@solana/web3.js`.
+- `chain/meteora/client.ts:137` — read paths + write dispatch. **Positions cache 5min
+  TTL + inflight dedup**; `force` bypasses. `getWalletBalance/getMyPositions/getActiveBin`.
+  Lazy `@meteora-ag/dlmm` import (`loadDlmmSdk`, CJS explodes on eager ESM import →
+  `postinstall scripts/patch-anchor.js` is required). `MeteoraWritePathNotPortedError`
+  thrown by `assertWritable` when not armed.
+- `chain/meteora/write-paths.ts` — `deploy`/`close`/`claim`, gated. Standard (≤69 bins)
+  = one tx; **wide-range (>69) = two-phase multi-tx** (`createExtendedEmptyPosition` +
+  `addLiquidityByStrategyChunkable`) due to Solana's 10240-byte realloc cap.
+- `chain/dry-run.ts` — deterministic fake chain (no network); preserves cache/force/dedup.
+- `market/` — real: `jupiter-price-oracle` (**Jupiter Price v3** `lite-api.jup.ag/price/v3`,
+  30s TTL, retry×2), `jupiter-token-info`, `meteora-pool-discovery`, `rugcheck`,
+  `meteora-smart-wallet-checker`, `agent-meridian-study`; test doubles: `fake-*`,
+  `static-price-oracle`.
+- `persistence/json/` — 9 repos over `atomic-write.ts` (temp+fsync+rename, crash-safe):
+  `position-repo` (state.json; caps `recentEvents` to 20), `pool-memory-repo`,
+  `lesson-repo`, `decision-log` (caps to 100), `strategy-repo`, `smart-wallet-repo`,
+  `token-blacklist-repo`, `dev-blocklist-repo`, `config-repo`. **No `signal-weights`
+  repo** (not ported).
+- `swap/jupiter-swap.ts` — **Jupiter Swap/Quote v6**. `llm/openrouter.ts` (real),
+  `llm/fake.ts`, plus decorators `with-provider-fallback`, `with-system-role-fallback`,
+  `with-tool-choice-retry` (available but **not wired by default** in daemon.ts — the
+  loop is intentionally thin, so resilience is opt-in via these decorators).
+- `notify/` (telegram, telegram-inbound, collecting, null), `scheduler/`
+  (interval, manual), `logger/console.ts`, `hivemind/agent-meridian.ts`.
+- `dashboard/` — the control bridge (see § Dashboard bridge).
+
+**`src/app/`** — use-cases (see the dedicated sections below).
+
+---
+
+## The ReAct loop (`src/app/agent/loop.ts:62`)
+
+`runAgentLoop(deps={llm,registry,ctx}, opts)` — the single entry (no `agentLoop` alias).
+- `opts`: `role`, `goal`, `systemPrompt`, `model`, `maxSteps` (default 20), `history`,
+  `toolFilter`, `requireToolOnFirstStep`, `onToolStart/onToolFinish`.
+- Each step: `llm.chat({...})`. `tool_choice="required"` only when
+  `requireToolOnFirstStep && step===0`, else `"auto"`.
+- **No-tool retry**: if a tool was required on step 0 and the model returned text, it
+  injects a reminder and continues once; a second text-only reply ends with
+  `no_tool_after_reminder`.
+- **Once-per-session tool locks** (`agent/session-locks.ts`): `oncePerSession` locks
+  after **success**; `noRetry` locks after the **first attempt regardless of outcome**.
+  `deploy_position` = both (double-spend guard); `close_position`/`swap_token` =
+  `oncePerSession`. A blocked call returns a `safety_blocked` error, never throws.
+- **JSON repair** lives in the executor (`tools/execute.ts` `parseArgs` → `jsonrepair`),
+  not the loop. **Provider fallback is NOT in the loop** (v1 assumes a well-behaved
+  provider); use the `llm/with-*` decorators if you need it.
+- **`role` is a label** — tool access is enforced purely by `toolFilter` →
+  `registry.subset(names)`. Pass a role without the matching filter and the whole
+  registry leaks.
 
 ---
 
 ## Agent roles & tool access
 
-Three roles (`agent.js:7-8`):
-
-| Role | Tool set (filter on `MANAGER_TOOLS` / `SCREENER_TOOLS` / `INTENT_TOOLS`) | Prompt source |
+| Role | Tool list (`src/domain/prompt/role-tools.ts`) | Caller |
 |---|---|---|
-| `SCREENER` | `deploy_position, get_active_bin, get_top_candidates, check_smart_wallets_on_pool, get_token_holders, get_token_narrative, get_token_info, search_pools, get_pool_memory, get_wallet_balance, get_my_positions` | `prompt.js:104` — strict regime, "no hallucination" hard rule, must call `deploy_position` to claim success. |
-| `MANAGER` | `close_position, claim_fees, swap_token, get_position_pnl, get_my_positions, get_wallet_balance` | `prompt.js:18` — *mechanical rule-application*; positions + management config pre-loaded in goal. |
-| `GENERAL` | Intent-pattern matched (see `INTENT_PATTERNS` in `agent.js:51`). 17 intents: decisions, deploy, close, claim, swap, selfupdate, blocklist, config, balance, positions, strategy, screen, memory, smartwallet, study, performance, lessons. | `prompt.js:156` — full instruction-following. |
+| `SCREENER` | `SCREENER_TOOLS` (12) — deploy + discovery/enrichment | `screening/cycle.ts:167`, `requireToolOnFirstStep:true` |
+| `MANAGER` | `MANAGER_TOOLS` (5) — close/claim/swap + reads | `management/cycle.ts:138`, `health/cycle.ts:65` |
+| `GENERAL` | `GENERAL_TOOLS` (10) | `telegram/router.ts:365`, `requireToolOnFirstStep:false` |
 
-Some tools are explicitly **never** sent to GENERAL unless the goal matches an intent: `self_update`, `update_config`, all `add/remove_*` and `pin_/unpin_` tools, `clear_lessons`, `set_active_strategy` (see `GENERAL_INTENT_ONLY_TOOLS`).
+There is **no INTENT-pattern matcher** in the TS version — GENERAL is simply the
+`GENERAL_TOOLS` list. The dashboard `/chat` surface uses a separate read-only
+`CHAT_READ_TOOLS` list (`src/adapters/dashboard/allowlist.ts`) so it literally cannot
+pick a write tool.
 
 ### Adding a new tool
 
-1. **`tools/definitions.js`** — add the OpenAI-format schema to the `tools` array.
-2. **`tools/executor.js`** — add `tool_name: functionImpl` to the `toolMap`. If it modifies on-chain state, also add it to `WRITE_TOOLS` + `PROTECTED_TOOLS` and add a `case` in `runSafetyChecks()`.
-3. **`agent.js`** — add the tool name to `MANAGER_TOOLS` / `SCREENER_TOOLS` and/or to the relevant `INTENT_TOOLS[intent]` set.
-4. If you want it in the Telegram `/settings` button menu, add it to `settingValue()` in `index.js` + the relevant `renderSettingsMenu` page.
+1. **`src/app/tools/impls/<name>.ts`** — `defineTool({ name, description, args (Zod),
+   result (Zod), execute, safety?, post?, oncePerSession?, noRetry? })`. The Zod
+   schemas are the single source for both the OpenAI JSON-Schema contract and runtime
+   validation (no drift).
+2. **Register it** — add to the registry assembly (`createRegistry([...])`) so
+   `ToolRegistry` knows it.
+3. **Role access** — add the name to `MANAGER_TOOLS` / `SCREENER_TOOLS` /
+   `GENERAL_TOOLS` in `src/domain/prompt/role-tools.ts` as appropriate.
+4. **If it writes on-chain** — give it a `safety[]` gate chain + `oncePerSession`
+   (+ `noRetry` for deploy-like double-spend risk), and add it to the dashboard
+   `WRITE_TOOLS_DASHBOARD` allowlist (it stays behind the `/tool` confirm gate).
+
+### Tool execution pipeline (`src/app/tools/execute.ts:32`)
+
+`parseArgs` (JSON.parse → jsonrepair fallback) → `args.safeParse` → **safety chain**
+(each `SafetyCheck` returns `null`=pass / `{reason}`=deny, runs BEFORE execute) →
+`execute` (thrown errors → `execute_failed`) → `result.safeParse` → **post hooks**.
+Every failure is a discriminated `ToolError`, never a throw.
+- **Safety gates** (`tools/safety/*`): `poolCooldownGate`, `walletBalanceGate`,
+  `maxPositionsGate` (uses `force:true`), `tokenBlacklistGate`, `deployerBlocklistGate`
+  (**fails OPEN** on enrichment error; the other four fail closed).
+- **Post hooks** (`tools/post/*`): `notify.*` (Telegram cards, guarded on
+  `result.success`) and `log-decision.*` (append to decision log). **Post-hook failures
+  are swallowed + logged, never fail the tool.**
 
 ---
 
-## The ReAct loop (`agent.js:157`)
+## Cron & cycle architecture
 
-- **System prompt is built at the start of every cycle** with: portfolio, positions, state summary, lessons (3-tier cap — pinned / role / recent), performance summary, decision summary, optional signal weights summary (SCREENER only), `lessons_for_prompt`.
-- **Messages get pushed in OpenAI format** unless the provider rejects the `system` role — then we switch to `providerMode = "user_embedded"` and embed the system prompt inside a user message.
-- **Per-step retry**: 3 attempts on transient errors. If the response is 502/503/529 the second attempt swaps to fallback model `stepfun/step-3.5-flash:free`. If `tool_choice=required` is rejected or the provider is in thinking mode, retry with `tool_choice=auto` / omitted.
-- **Tool args are JSON-validated** and run through `jsonrepair` if malformed; unrepairable args result in `blocked: true` returned to the LLM.
-- **No-tool-loop guard**: if `mustUseRealTool` is true (action intents, `MUTATING_TOOL_INTENTS` regex) and the LLM responds with text only, we inject a reminder; second failure returns an error message.
-- **Once-per-session tool locks**:
-  - `ONCE_PER_SESSION = { deploy_position, swap_token, close_position }` — blocked on second call regardless of success.
-  - `NO_RETRY_TOOLS = { deploy_position }` — locks on first attempt even if it failed.
-  - For `swap_token` / `close_position`, locks only on `result.success === true` so a genuine failure can be retried.
-- **On every tool call**: `logAction({tool, args, result, duration_ms, success})` writes the audit JSONL.
+Scheduled in `main()` (autonomous mode) via `createIntervalScheduler`:
 
----
-
-## Cron & cycle architecture (`index.js`)
-
-Cron tasks created by `startCronJobs()`:
-
-| Task | Cadence | Job |
+| Task | Cadence | Function |
 |---|---|---|
-| Management | `*/managementIntervalMin * * * *` | `runManagementCycle()` |
-| Screening | `*/screeningIntervalMin * * * *` | `runScreeningCycle()` |
-| Health check | `0 * * * *` | One-shot `agentLoop` as MANAGER with health summary goal |
-| Briefing | `0 1 * * *` (UTC) | `runBriefing()` — 8 AM Jakarta |
-| Briefing watchdog | `0 */6 * * *` (UTC) | `maybeRunMissedBriefing()` — fires on startup if missed |
-| **PnL poller** | every 30s (`setInterval`) | Trailing-TP detection between management cycles (below) |
+| screening | `screeningIntervalMin` | `runScreeningCycle` (`src/app/screening/cycle.ts:53`) |
+| management | `managementIntervalMin` | `runManagementCycle` (`src/app/management/cycle.ts:88`) |
+| pnl-poller | 30s (+15s confirm) | `createPnlPoller` (`src/app/management/pnl-poller.ts:141`) |
+| health | `healthCheckIntervalMin` | `runHealthCycle` (`src/app/health/cycle.ts:24`) |
+| briefing | 24h (hardcoded) | `runBriefingCycle` (`src/app/briefing/cycle.ts:16`) |
+| hivemind-sync | 15m (hardcoded) | `createHiveMindSync` (`src/app/hivemind/sync.ts:38`) |
 
-**Race condition guards** (all in `index.js`):
-- `_managementBusy` / `_screeningBusy` flags prevent overlap.
-- `_screeningLastTriggered` (epoch ms) prevents management from spamming screening.
-- `_pollTriggeredAt` cooldown equal to `managementIntervalMin` to avoid PnL-poller double-triggering.
-- `deploy_position` safety check uses `force: true` on `getMyPositions()` for a fresh position count.
+The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
 
-### The hybrid management cycle (deterministic + LLM)
+### Screening cycle
+1. **Preflight**: wallet/positions(`force:true`)/strategy/decisions. Skip (write a
+   `skip` decision) if at `maxPositions` or `wallet.sol < deployAmountSol + gasReserve`.
+2. **Candidates**: `get_top_candidates` tool → discovery → `hardFilter` → `rankCandidates`.
+3. **0 candidates** → `no_deploy` decision, no LLM.
+4. **LLM**: SCREENER prompt + candidate block, `runAgentLoop` `maxSteps:8`,
+   `requireToolOnFirstStep:true` — the model must call `deploy_position` (or justify).
 
-The management cycle is **mostly deterministic in JS, LLM only for the hard cases**:
+### Management cycle (deterministic decides, LLM only executes)
+1. `getMyPositions({force:true})`; `planForPosition` per position:
+   deterministic close rule → else CLAIM if `unclaimed_fees_usd >= minClaimAmount`
+   → else STAY.
+2. If **all STAY → the LLM is never called** (`{kind:"all_stay"}`).
+3. Else build a MANAGER goal listing the assigned actions ("execute … Do NOT
+   re-evaluate rules") and run the loop, `MANAGER_TOOLS`, `requireToolOnFirstStep:true`.
 
-1. `getMyPositions({ force: true })` → snapshot.
-2. `recordPositionSnapshot` per pool.
-3. JS `updatePnlAndCheckExits(position, …)` for each:
-   - `STOP_LOSS` if `pnl_pct <= stopLossPct`
-   - `TRAILING_TP` if `trailing_active && (peak - current) >= trailingDropPct` (queued for 15s recheck)
-   - `OUT_OF_RANGE` if `minutes_out_of_range >= outOfRangeWaitMinutes`
-   - `LOW_YIELD` if `fee_per_tvl_24h < minFeePerTvl24h && age >= minAgeBeforeYieldCheck`
-4. For positions with no exit alert: `getDeterministicCloseRule(p, mgmtConfig)` applies the **5 hard rules** (`index.js:895`):
-   - Rule 1: stop loss, Rule 2: take profit, Rule 3: pumped far above range, Rule 4: OOR wait, Rule 5: low yield.
-5. Positions needing `CLAIM` if `unclaimed_fees_usd >= minClaimAmount`.
-6. Positions with `instruction` set are marked `INSTRUCTION` and deferred to the LLM.
-7. **LLM is invoked only if any actionMap value is not `STAY`**, with a hard-coded goal that already lists positions + their assigned action. The LLM just executes (no re-evaluation). This saves tokens and prevents hallucinated rules.
-
-**Trailing TP two-phase confirmation** (15s recheck):
-- First poll: candidate drop queued in state.
-- 15s later: re-fetch positions, `resolvePendingTrailingDrop` — if the drop still holds (within 1% tolerance), fire `confirmed_trailing_exit` and trigger management cycle.
-- Mirror pattern for peak confirmation (`queuePeakConfirmation` / `resolvePendingPeak`).
-
-### The screening cycle (multi-stage pipeline)
-
-1. **Pre-checks**: `getMyPositions` + `getWalletBalances` in parallel. Skip if at `maxPositions` or `balance.sol < deployAmountSol + gasReserve`. Each skip writes a `decision-log` entry.
-2. **Top candidates**: `getTopCandidates({limit: 10})` — applies ALL hard filters (TVL, fee/TVL, volatility, organic, holders, mcap, bin step, launchpad allow/block, token age, cooldowns, base mints already in use, dev blocklist), optional indicator confirmation, **and** PVP-rival detection (default: warn; `blockPvpSymbols: true` → hard filter).
-3. **Sequential recon** with 150ms throttle (avoid 429s): `getActiveBin`, `checkSmartWalletsOnPool`, `getTokenNarrative`, `getTokenInfo` per candidate.
-4. **Hard filters after recon**: launchpad allow/block, `bot_holders_pct > maxBotHoldersPct`.
-5. **If 0 pass**: write `no_deploy` decision with `rejected[]` and return `⛔ NO DEPLOY` report.
-6. **If 1 pass**: `getLoneCandidateSkipReason()` (smart-wallet absence, no narrative, PVP conflict, etc.) — if skipped, write `no_deploy` decision.
-7. **Stage signals** for Darwinian attribution.
-8. **Compact candidate blocks** built in `index.js:543`.
-9. **LLM** gets the blocks + active strategy + balance + computed deploy amount + bins_below formula. The LLM is *forced* via `tool_choice: "required"` on step 0.
-10. **Post-deploy**: `appendDecision` with full context. Darwinian signals (if enabled) get consumed via `getAndClearStagedSignals`.
+### PnL poller (trailing-TP two-phase confirm)
+- Tick 1: a trailing drop (`peak - current >= trailingDropPct`, with
+  `peak >= trailingTriggerPct`) is **queued**, not fired.
+- ~15s later: re-check; fire `close_confirmed` only if the drop still holds within
+  1% tolerance. **`peak_pnl_pct` is merged from the position repo** before the pure
+  tick — forget it and trailing-TP silently never triggers.
 
 ---
 
-## Position lifecycle
+## Position lifecycle & the 5 deterministic close rules
 
-```
-deployPosition()                   tools/dlmm.js
-   ├─ safety: pool_detail fresh fetch, TVL, fee/TVL, volatility, bin_step
-   ├─ safety: bin-array init rent check (refuses pools that need initialization)
-   ├─ strategy: spot | curve | bid_ask (config.strategy.strategy)
-   ├─ range: bins_below linear in volatility, totalBins >= 35 (MIN_SAFE_BINS_BELOW)
-   ├─ wide path: totalBins > 69 → createExtendedEmptyPosition + addLiquidityByStrategyChunkable
-   ├─ standard path: initializePositionAndAddLiquidityByStrategy
-   └─ post: trackPosition({ signal_snapshot: getAndClearStagedSignals })
-        appendDecision({ type: "deploy", actor: "SCREENER", metrics, risks, rejected })
-        notifyDeploy (Telegram)   ── skip if live message active
+`getDeterministicCloseRule` (`src/domain/rules/close-rules.ts:39`):
+1. **Stop loss** — `pnl_pct <= stopLossPct`
+2. **Take profit** — `pnl_pct >= takeProfitPct`
+3. **Pumped above range** — `active_bin > upper_bin + outOfRangeBinsToClose`
+4. **OOR wait** — `active_bin > upper_bin && minutes_out_of_range >= outOfRangeWaitMinutes`
+5. **Low yield** — `fee_per_tvl_24h < minFeePerTvl24h && age_minutes >= 60`
 
-manage cycle (every N min)
-   ├─ recordPositionSnapshot per pool
-   ├─ updatePnlAndCheckExits → STOP_LOSS / TRAILING_TP / OOR / LOW_YIELD
-   ├─ getDeterministicCloseRule → 5 hard rules
-   ├─ LLM invoked only for non-STAY actions (or INSTRUCTION)
-   └─ on close: recordClose() → recordPerformance() in lessons.js
-                 ├─ recordPoolDeploy (pool-memory.json)
-                 ├─ derive lesson (PREFER/AVOID/WORKED/FAILED)
-                 ├─ if performance.length % 5 == 0 → evolveThresholds + recalculateWeights
-                 └─ push HiveMind event (fire-and-forget)
-
-auto-swap on close (executor.js:610)
-   ├─ only if !skip_swap && result.base_mint
-   ├─ get wallet balance, find base token
-   ├─ if usd >= 0.10 → swapToken back to SOL
-   └─ result.auto_swapped = true + auto_swap_note (so LLM doesn't double-swap)
-```
-
-**OOR detection**: `getMyPositions` calls `markOutOfRange` / `markInRange` for every position every cycle. The first time we see OOR, `out_of_range_since` is set; `minutesOutOfRange` is the diff.
-
-**Position instruction** (`set_position_note`): `instruction` is sanitized (no newlines, max 280 chars, no `<>`) and shown in the system prompt + injected verbatim. The LLM must check `get_position_pnl` against the condition and execute immediately if met. The MANAGER prompt (line 144) says: "BIAS TO HOLD does NOT apply when an instruction condition is met."
-
-**Cooldown logic** (`pool-memory.js`):
-- Single `low yield` close → 4h pool cooldown.
-- `oorCooldownTriggerCount` (default 3) consecutive OOR closes → `oorCooldownHours` (default 12h) cooldown on **both pool and base mint**.
-- Optional repeat-deploy cooldown: `repeatDeployCooldownTriggerCount` (default 3) fee-generating deploys in a row → pool+token cooldown (configurable scope).
-- All checked by `isPoolOnCooldown` / `isBaseMintOnCooldown` in `getTopCandidates` and `deployPosition`.
+Rules 1 & 2 are suppressed when PnL is suspect (`isPnlSuspect`); range rules (3-4)
+fire regardless. On close, `post/log-decision` records it and `post/notify` sends the
+Telegram card. Cooldowns live in `pool-memory` + `rules/cooldown.ts`.
 
 ---
 
-## Persistent files (all JSON at repo root)
+## Persistent files (JSON at `STATE_DIR`, atomic writes)
 
-| File | Shape | Mutated by |
+| File | Repo | Owns |
 |---|---|---|
-| `user-config.json` | Flat keys (e.g. `minTvl`, `deployAmountSol`); nested `chartIndicators`. | `config.js` (load), `update_config` tool, `evolveThresholds`, setup wizard. **NEVER gitignored but you must `.gitignore` it locally** — README says so. |
-| `state.json` | `{ positions: { [address]: {position, pool, pool_name, strategy, bin_range, amount_sol, active_bin_at_deploy, deployed_at, out_of_range_since, last_claim_at, total_fees_claimed_usd, rebalance_count, closed, closed_at, notes, peak_pnl_pct, pending_*, trailing_active, instruction, _lastBriefingDate, recentEvents[]} }` | `state.js` |
-| `lessons.json` | `{ lessons: [{id, rule, tags, outcome, sourceType, confidence, role, pinned, context, ...}], performance: [{position, pool, pnl_pct, pnl_usd, fees_earned_usd, range_efficiency, minutes_held, close_reason, signal_snapshot, ...}] }` | `lessons.js` |
-| `pool-memory.json` | `{ [poolAddress]: { name, base_mint, deploys[], total_deploys, avg_pnl_pct, win_rate, adjusted_win_rate, cooldown_until, base_mint_cooldown_until, notes[], snapshots[] } }` | `pool-memory.js` |
-| `decision-log.json` | `{ decisions: [{id, ts, type, actor, pool, summary, reason, risks[], metrics{}, rejected[]}] }` max 100 | `decision-log.js` (called from deploy/close/skip in `tools/dlmm.js`, `index.js`) |
-| `signal-weights.json` | `{ weights: {signal: 0.3-2.5}, last_recalc, recalc_count, history[] }` | `signal-weights.js` |
-| `strategy-library.json` | `{ active: <id>, strategies: { [id]: {id, name, author, lp_strategy, token_criteria, entry, range, exit, best_for, raw} } }` | `strategy-library.js` |
-| `smart-wallets.json` | `{ wallets: [{name, address, category, type, addedAt}] }` | `smart-wallets.js` |
-| `token-blacklist.json` | `{ [mint]: {symbol, reason, added_at, added_by} }` | `token-blacklist.js` |
-| `dev-blocklist.json` | `{ [wallet]: {label, reason, added_at} }` | `dev-blocklist.js` |
-| `deployer-blacklist.json` | `{ _note, addresses: [wallet, …] }` (legacy) | `discord-listener/pre-checks.js` |
-| `discord-signals.json` | Array of signals with status pending/processed | `discord-listener` |
-| `hivemind-cache.json` | `{ sharedLessons: [], presets: [], pulledAt }` | `hivemind.js` |
-| `logs/agent-YYYY-MM-DD.log` | Plain text | `logger.js` |
-| `logs/actions-YYYY-MM-DD.jsonl` | Audit JSONL | `logger.js logAction` |
+| `state.json` | position-repo | tracked positions + recent-events ring (capped 20) |
+| `pool-memory.json` | pool-memory-repo | per-pool deploy history, win rates, cooldowns |
+| `lessons.json` | lesson-repo | lessons + performance records |
+| `decision-log.json` | decision-log | rolling 100 decisions (deploy/close/skip/no_deploy/note) |
+| `strategy-library.json` | strategy-repo | saved strategies + active pointer |
+| `smart-wallets.json` | smart-wallet-repo | tracked KOL/alpha wallets (type lp\|holder) |
+| `token-blacklist.json` | token-blacklist-repo | mint → reason |
+| `dev-blocklist.json` | dev-blocklist-repo | deployer wallet → reason |
+| `user-config.json` | config-repo | the live config (loaded → nested `AppConfig`) |
 
-All persistent files are loaded/saved on each call — no in-memory caching layer. Keep writes small and on the path of one position close, never inside a hot loop.
+All writes are temp-file + fsync + atomic rename. Config redaction (`*key/token/secret*`)
+happens when a file is served over the bridge. In production these live on the
+`/opt/data` volume (`MERIDIAN_STATE_DIR=/opt/data`) — see `deploy/OPERATIONS.md`.
 
 ---
 
 ## Config system
 
-`config.js` exports a single `config` object built once at module load, then mutated by `update_config` tool and `reloadScreeningThresholds()`. **Top-level keys** (all flat unless noted):
-
-| Section | Keys | Default |
-|---|---|---|
-| `risk` | `maxPositions`, `maxDeployAmount` | 3, 50 |
-| `screening` | `excludeHighSupplyConcentration`, `minFeeActiveTvlRatio`, `minTvl`, `maxTvl`, `minVolume`, `minOrganic`, `minQuoteOrganic`, `minHolders`, `minMcap`, `maxMcap`, `minBinStep`, `maxBinStep`, `timeframe`, `category`, `minTokenFeesSol`, `useDiscordSignals`, `discordSignalMode`, `avoidPvpSymbols`, `blockPvpSymbols`, `maxBotHoldersPct`, `maxTop10Pct`, `allowedLaunchpads`, `blockedLaunchpads`, `minTokenAgeHours`, `maxTokenAgeHours` | see `user-config.example.json` |
-| `management` | `minClaimAmount`, `autoSwapAfterClaim`, `outOfRangeBinsToClose`, `outOfRangeWaitMinutes`, `oorCooldownTriggerCount`, `oorCooldownHours`, `repeatDeployCooldownEnabled`, `repeatDeployCooldownTriggerCount`, `repeatDeployCooldownHours`, `repeatDeployCooldownScope`, `repeatDeployCooldownMinFeeEarnedPct`, `minVolumeToRebalance`, `stopLossPct`, `takeProfitPct`, `minFeePerTvl24h`, `minAgeBeforeYieldCheck`, `minSolToOpen`, `deployAmountSol`, `gasReserve`, `positionSizePct`, `trailingTakeProfit`, `trailingTriggerPct`, `trailingDropPct`, `pnlSanityMaxDiffPct`, `solMode` | 5, false, 10, 30, 3, 12, true, 3, 12, "token", 0, 1000, -50, 5, 7, 60, 0.55, 0.5, 0.2, 0.35, true, 3, 1.5, 5, false |
-| `strategy` | `strategy`, `minBinsBelow`, `maxBinsBelow`, `defaultBinsBelow` | bid_ask, 35, 69, 69 |
-| `schedule` | `managementIntervalMin`, `screeningIntervalMin`, `healthCheckIntervalMin` | 10, 30, 60 |
-| `llm` | `temperature`, `maxTokens`, `maxSteps`, `managementModel`, `screeningModel`, `generalModel` | 0.373, 4096, 20, healer-alpha, hunter-alpha, healer-alpha |
-| `darwin` | `enabled`, `windowDays`, `recalcEvery`, `boostFactor`, `decayFactor`, `weightFloor`, `weightCeiling`, `minSamples` | true, 60, 5, 1.05, 0.95, 0.3, 2.5, 10 |
-| `tokens` | `SOL`, `USDC`, `USDT` (mint addresses) | canonical |
-| `hiveMind` | `url`, `apiKey`, `agentId`, `pullMode` | `https://api.agentmeridian.xyz`, built-in key, auto-generated, "auto" |
-| `api` | `url`, `publicApiKey`, `lpAgentRelayEnabled` | `https://api.agentmeridian.xyz/api`, built-in key, false |
-| `jupiter` | `apiKey`, `referralAccount`, `referralFeeBps` | env override, fixed referral, 50 bps |
-| `indicators` | `enabled`, `entryPreset`, `exitPreset`, `rsiLength`, `intervals`, `candles`, `rsiOversold`, `rsiOverbought`, `requireAllIntervals` | false, supertrend_break, supertrend_break, 2, ["5_MINUTE"], 298, 30, 80, false |
-
-`update_config` (executor.js:333) uses a flat-key `CONFIG_MAP` (50+ entries) that knows how to (a) coerce booleans/arrays/strings/numbers, (b) clamp `binsBelow*` to `MIN_SAFE_BINS_BELOW=35`, (c) restart cron if `managementIntervalMin` / `screeningIntervalMin` changed, (d) write a `[SELF-TUNED]` lesson.
-
-`computeDeployAmount(walletSol) = clamp((walletSol - gasReserve) × positionSizePct, [deployAmountSol, maxDeployAmount])` → 2-decimal SOL.
-
-`reloadScreeningThresholds()` (config.js:236) is called by `evolveThresholds` to re-apply changes to the in-memory `config` without process restart.
+`user-config.json` (flat on disk) → `parseAppConfig` (`src/domain/config-load.ts`):
+- `FlatUserConfigSchema` (`schemas/config-flat.ts`, `.passthrough()` so unknown keys
+  survive) → `flatToNested` → `AppConfigSchema` (`schemas/config.ts`, 13 subsections:
+  `risk, management, strategy, schedule, screening, llm, darwin, hiveMind, api, jupiter,
+  indicators, tokens, pnl`). Returns a `Result` — never throws.
+- **`strategy` enum = `spot | curve | bid_ask` only (no `auto`).** A config with
+  `strategy:"auto"` fails validation → if a caller throws on that Result, the daemon
+  crash-loops. Model fields must be exact provider slugs (e.g. `minimax/minimax-m2.7`).
+- `bins*` fields hard-floor at `MIN_SAFE_BINS_BELOW` (35). `pnl.source` = `rpc|meteora`
+  (default rpc, `pnlRpcUrl` default `https://pump.helius-rpc.com`).
+- `update_config` writes back via `nestedToFlat` merged with the original flat
+  (its doc comment is stale — trust the code).
 
 ---
 
-## Environment variables (`.env`)
+## Environment variables
 
-| Var | Required | Purpose |
-|---|---|---|
-| `WALLET_PRIVATE_KEY` | yes | Base58 (or JSON array) |
-| `RPC_URL` | yes | Solana RPC. Helius recommended. |
-| `OPENROUTER_API_KEY` (or `LLM_API_KEY`) | yes | LLM provider key. |
-| `LLM_BASE_URL` | no | Override for any OpenAI-compatible endpoint (LM Studio: `http://localhost:1234/v1`). |
-| `LLM_MODEL` | no | Default model. Per-role models in `user-config.json` override. |
-| `HELIUS_API_KEY` | recommended | Wallet balance lookups via Helius. |
-| `LPAGENT_API_KEY` | optional | Direct LPAgent positions fetch fallback. |
-| `JUPITER_API_KEY` | optional | Better rate limit on Jupiter Swap. Default key baked in. |
-| `TELEGRAM_BOT_TOKEN` | no | Notifications + REPL. |
-| `TELEGRAM_CHAT_ID` | no | Default chat (also persisted to `user-config.telegramChatId`). |
-| `TELEGRAM_ALLOWED_USER_IDS` | no | Comma-separated Telegram user IDs allowed to control. Required if chat is a group. |
-| `ALLOW_SELF_UPDATE` | no | Set `true` to allow the `self_update` tool (default false). |
-| `DRY_RUN` | no | Skip all on-chain txs. `npm run dev` sets it. |
-| `LOG_LEVEL` | no | `debug` / `info` / `warn` / `error`. |
-| `DISCORD_USER_TOKEN` | no | Selfbot for `discord-listener/`. |
-| `DISCORD_GUILD_ID` / `DISCORD_CHANNEL_IDS` | no | Discord listener config. |
-| `DISCORD_MIN_FEES_SOL` | no | Default 5. |
-| `ENVRYPT_KEY` / `ENVCRYPT_KEY` | no | Key for `.env` XOR encryption (line-by-line marked with `# encrypted`). |
-| `HIVE_MIND_URL` / `HIVE_MIND_API_KEY` | no | Override defaults. |
+| Var | Role |
+|---|---|
+| `WALLET_PRIVATE_KEY` | base58 or JSON byte-array (NOT base64). Required for meteora. |
+| `RPC_URL` | Solana RPC. Required for meteora. Wallet balance = `getBalance` on this. |
+| `OPENROUTER_API_KEY` (or `LLM_API_KEY`) | LLM. `LLM_BASE_URL` overrides endpoint. |
+| **`MERIDIAN_CHAIN`** | `meteora` selects the real chain (+ cascades market=real, price=jupiter). Default `dryrun`. |
+| **`MERIDIAN_WRITE_UNSAFE`** | `true` arms real writes. Without it, write paths throw. |
+| `MERIDIAN_MARKET` / `MERIDIAN_PRICE` | override the cascade (`real`/`fake`, `jupiter`/`static`). |
+| `MERIDIAN_AUTONOMOUS` | `true` = resident daemon; else one-shot. |
+| `MERIDIAN_STATE_DIR` | where JSON state lives (default cwd). |
+| `MERIDIAN_DEMO` | `true` forces the fake LLM. |
+| `DASHBOARD_ENABLED` / `DASHBOARD_PORT` / `DASHBOARD_TOKEN` | bridge on/off, port (8787), Bearer token. |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_ALLOWED_USER_IDS` | ops surface + auth. |
+| `SOL_PRICE_USD` | static-price fallback (default 150). |
+| `DRY_RUN` | **surfaced only as a HiveMind capability flag — NOT a gating var in the TS code.** |
 
-Encrypted env flow (optional, see `scripts/envrypt.js`):
-1. Save plain values to `.env.raw`.
-2. `printf "long-local-key\n" > .envrypt`.
-3. `npm run env:encrypt` reads `.env.raw`, encrypts anything matching `*_KEY`/`*SECRET*`/`*TOKEN*`/`*MNEMONIC*`/etc., writes `.env`. Originals are XOR'd with a positional repeating key — **not** cryptographically secure, but obscures values in plaintext grep.
+> The old JS-era `DRY_RUN`-as-master-switch is gone. The gates are `MERIDIAN_CHAIN`
+> + `MERIDIAN_WRITE_UNSAFE`. Production sets these in `docker-compose.yml`, not `.env`.
 
 ---
 
-## Telegram ops surface
+## Dashboard bridge (`src/adapters/dashboard/`)
 
-| Surface | Where handled | Notes |
-|---|---|---|
-| `/help` / `/status` / `/wallet` / `/config` | `index.js#telegramHandler` | Read-only. |
-| `/positions` / `/pool <n>` / `/close <n>` / `/set <n> <note>` | `index.js#telegramHandler` | Bypass LLM — direct state mutation. `/close <n>` calls `closePosition` directly. |
-| `/closeall` | index.js | Closes all open positions in sequence. |
-| `/screen` / `/candidates` / `/deploy <n>` | `runDeterministicScreen` + `deployLatestCandidate` | Deterministic — no LLM. The single-candidate skip rule applies. |
-| `/briefing` | `generateBriefing` | On-demand daily report. |
-| `/settings` / `/menu` / `/configmenu` | `renderSettingsMenu` + `applySettingsMenuCallback` | Inline-keyboard menu with toggle/step buttons. Updates flow through `update_config` tool. |
-| `/hive pull` | `pullHiveMindLessons` + `pullHiveMindPresets` | Manual HiveMind fetch. |
-| `/pause` / `/resume` / `/stop` | index.js | Toggle cron jobs / graceful shutdown. |
-| Free-form chat | `agentLoop` with `agentType=GENERAL` | Intent-matched tool subset. |
-| `cfg:*` callback queries | `applySettingsMenuCallback` | Settings menu button presses. |
-
-**Auth** (`telegram.js#isAuthorizedIncomingMessage`):
-- `chatId` must match incoming message's chat (env or persisted `user-config.telegramChatId`).
-- If chat is a group/supergroup, `TELEGRAM_ALLOWED_USER_IDS` must be non-empty.
-- Otherwise, all messages from the matching chat are accepted.
-- Warns-once on missing config, then silently ignores inbound.
-
-**Queueing**: while a management/screening cycle or free-form agentLoop is busy, inbound messages are queued (`_telegramQueue`, max 5). Overflow sends "Queue is full".
-
-**Live messages**: `createLiveMessage` returns a handle. `toolStart`/`toolFinish` push per-tool lines (with `ℹ️`/`✅`/`❌` icons) into a single Telegram message that gets edited in place. While a live message is active, standalone notifications (`notifyDeploy`/`notifyClose`/`notifySwap`/`notifyOutOfRange`) are suppressed to avoid spam.
+A `node:http` server (zero external deps) bound to **`127.0.0.1` only** (never
+`0.0.0.0`), token-authed. Started from `daemon.ts` when `DASHBOARD_ENABLED=true`.
+- Routes: `GET /health`, `/state/positions` (`?force=1` throttled 1×/10s),
+  `/state/summary`, `/state/file/:name` (whitelisted, `user-config` redacted),
+  `/events` (SSE — piggybacks the PnL-poller cache, **no new RPC**), `POST /tool`
+  (allowlist + write `confirm:true` + in-flight lock), `POST /chat` (GENERAL tick,
+  read-only via `CHAT_READ_TOOLS`).
+- **The Next.js web app** (`dashboard/web/`) is the only public surface. It talks to
+  the bridge server-side only (token never reaches the browser) via same-origin
+  `/api/*` proxies. PIN auth: `middleware.ts` (iron-session cookie) + `lib/auth-core.ts`
+  (scrypt + constant-time + rate-limit). Deployment/auth details → `deploy/OPERATIONS.md`.
 
 ---
 
-## Discord listener
+## Telegram ops surface (`src/app/telegram/router.ts`)
 
-Standalone process — `cd discord-listener && npm install && npm start`. Shares `../.env` for env vars.
-
-- Uses `discord.js-selfbot-v13` (personal account, not bot). **Selfbot — use responsibly; against Discord TOS.**
-- Filters: only `Metlex Pool Bot` author, only configured channels.
-- Extracts Solana addresses (base58, 32-44 chars, must contain digit, not in `FALSE_POSITIVE_SKIP` set).
-- For each address: runs `runPreChecks` (dedup → blacklist → pool resolve → rug → deployer → fees) and appends to `discord-signals.json` with `status: "pending"`.
-- Screener picks up pending signals first (or only, if `discordSignalMode: "only"`).
-- `DISCORD_MIN_FEES_SOL` defaults to 5; the screener's hard floor is `minTokenFeesSol` (default 30) — both apply.
+`routeTelegramMessage` dispatches: read-only `/help /status /wallet /positions /briefing`;
+cron control `/pause /resume /stop` (need `scheduler`/`shutdown` deps); write commands
+`/close <n> /closeall /deploy <pool> [sol]` (gated on `deps.writesEnabled`). Free-form
+text → GENERAL agent tick (`GENERAL_TOOLS`, `maxSteps:8`). **Auth (chat-id / user
+allowlist) is upstream** (the inbound adapter), not in the router.
 
 ---
 
-## Strategy library (default strategies)
+## Known issues / gotchas (verified against the code)
 
-| id | name | lp_strategy | idea |
-|---|---|---|---|
-| `custom_ratio_spot` | Custom Ratio Spot | spot | Express directional bias via token:SOL ratio. |
-| `single_sided_reseed` | Single-Sided Bid-Ask + Re-seed | bid_ask | Token-only redeploys on OOR downside. |
-| `fee_compounding` | Fee Compounding | any | Claim + add back to same position. |
-| `multi_layer` | Multi-Layer | mixed | One position, multiple add-liquidity layers with different shapes. |
-| `partial_harvest` | Partial Harvest | any | Withdraw 50% at 10% return; rest keeps running. |
-
-`set_active_strategy` swaps the active one. The screener prompt mentions the active strategy in the `ACTIVE STRATEGY` block.
-
----
-
-## Known issues / tech debt (verified by reading the code)
-
-- **`lessons.js evolveThresholds()`** evolves `minOrganic` and `minFeeActiveTvlRatio` only.
-- **`get_wallet_positions` tool** is in `definitions.js` and wired in `executor.js`, but not in `MANAGER_TOOLS`/`SCREENER_TOOLS`. Only `INTENT_TOOLS.balance` / `INTENT_TOOLS.positions` expose it to GENERAL.
-- **Lazy SDK load** (`tools/dlmm.js:33`) — `@meteora-ag/dlmm` is dynamic-imported on first on-chain call to avoid CJS-import crash on Node 24 (the `postinstall` `patch-anchor.js` handles another piece of this). Don't `import` it eagerly at top of file.
-- **Position cache** (`_positionsCache` 5min TTL) — in single-process mode it's a perf win, but the cache is invalidated by `_positionsCacheAt = 0` after every deploy/close, and the executor's `deploy_position` safety check uses `force: true` for a fresh count.
-- **PnL sanity check** (`pnlSanityMaxDiffPct`, default 5%) — if reported vs derived pnl_pct differ by more than this, the LLM is told not to trust that tick. Implemented in `dlmm.js` getMyPositions and `state.js` updatePnlAndCheckExits.
-- **DRY_RUN auto-skip SOL balance check** — `runSafetyChecks` for `deploy_position` only checks `balance.sol < amountY + gasReserve` if `DRY_RUN !== "true"`.
-- **HiveMind disable path is murky** — README says "there is currently no empty-string disable path" for HiveMind. `config.hiveMind.url/apiKey` fall back to defaults if blank. Set `pullMode: "manual"` to suppress auto-pull.
-- **Selfbot in `discord-listener/`** is a ToS gray area. Make sure operators know.
-- **`.claude/settings.json`** denies `rm -rf`, `wget`, and **reads of `.env*`**. It also blocks `run_in_background: true` via a PreToolUse hook. So in this repo, Claude Code can't background long-running commands — serial execution only.
-- **Drift risk** — `user-config.json` keys must match the **flat** `update_config` CONFIG_MAP in executor.js. New keys: add to both, otherwise `update_config` returns `unknown: [...]` and skips the apply.
-- **The Discord `useDiscordSignals` flag** lives in `screening`, not `discord`. Screener checks `config.screening.useDiscordSignals`, and `discordSignalMode: "merge" | "only"`.
+- **`DRY_RUN` is not a gate** in TS — only `MERIDIAN_CHAIN` + `MERIDIAN_WRITE_UNSAFE`.
+- **`rules/screening.ts` `defaultThresholds` ignores `AppConfig`** (`void cfg`) — screening
+  threshold changes in `user-config.json` don't reach the pure screener until wired.
+- **Provider fallback / system-role / tool-choice retry are decorators, not wired by
+  default** — `daemon.ts` uses `createOpenRouterLLMClient` directly. Wrap it if you need resilience.
+- **`role` is label-only**; the `activeRegistry` ternary in the loop is a dead no-op —
+  tool scoping happens through `toolFilter`/schema emission.
+- **Config vs state root can diverge** (config uses cwd, repos use `MERIDIAN_STATE_DIR`).
+- **`FILE_WHITELIST` + redaction are duplicated** in the bridge (`allowlist.ts`/`redact.ts`)
+  and the web fs path (`dashboard/web/lib/files.ts`) — keep them in sync.
+- **`patch-anchor.js` (postinstall) is mandatory on Node 22** or `@meteora-ag/dlmm`
+  fails to load (anchor ESM directory-import + `BN` export). See `deploy/OPERATIONS.md`.
+- **Jupiter Price v6 is sunset** — code uses `lite-api.jup.ag/price/v3`; swap uses v6.
+- **Deploys are single-side SOL only** (`planDeploy` throws otherwise); wide-range (>69
+  bins) is multi-tx with different slippage units per path.
+- **No `signal-weights` repo, no bin-array rent assert** (named in the legacy doc; never
+  ported to TS).
 
 ---
 
 ## Patterns to copy
 
-When adding a new tool that reads on-chain data, copy the **cache + inflight dedup + `force` flag** pattern from `getMyPositions` (`tools/dlmm.js:1154`). The `force: true` is what the deploy safety check relies on.
-
-When adding a new persistent JSON store, copy the load/save pattern from `state.js` or `pool-memory.js`. **Always** run text through `sanitizeStoredText` (or write a domain-specific sanitizer that strips `<>` and newlines) before persisting — those values get echoed into the LLM prompt later.
-
-When adding a new pre-LLM enrichment, follow the **3-strikes (Discord pre-checks)** model: cheap checks first (in-memory dedup, file lookup), then network (pool resolution, rugcheck), then more network (deployer, global fees). Log each pass/reject with the stage name.
-
-When scheduling work, follow the **`_busy` flag + cooldown** pattern. `_managementBusy`, `_screeningBusy`, `_pnlPollBusy`, `_pollTriggeredAt`, `_screeningLastTriggered` are the canonical examples.
+- **New on-chain read** → copy the cache + inflight-dedup + `force` pattern from
+  `chain/meteora/client.ts` `getMyPositions`. `force:true` is what safety gates rely on.
+- **New persistent store** → copy a repo from `persistence/json/` (factory over a file
+  path, `writeJsonAtomic`, Zod-validated read, `Result` return). Cap any growing array.
+- **New tool** → `defineTool` with Zod args/result + safety gates + post hooks; never
+  throw, return `ToolError`.
+- **New scheduled work** → `scheduler.every(ms, job, label)` (overlap-skip is built in);
+  add teardown to the shutdown sequence in `daemon.ts`.
+- **New pre-LLM enrichment** → cheap checks first (in-memory/file), then network, each
+  pass/reject logged with a stage name (see `rules/screening.ts` `hardFilter`).
 
 ---
 
 ## What to read next
 
-- Adding a new tool → `tools/definitions.js` + `tools/executor.js` + `agent.js` (see "Adding a new tool" above).
-- Changing safety rules → `tools/executor.js#runSafetyChecks` and `index.js#getDeterministicCloseRule`.
-- Adding a new persistent state file → copy `state.js` or `pool-memory.js`. Add a getter to `index.js` system-prompt section if the LLM needs to see it.
-- Changing the LLM contract → `prompt.js` (buildSystemPrompt) and `agent.js` (INTENT_TOOLS + role sets + safety guards).
-- Changing deploy/close behavior → `tools/dlmm.js` (the SDK wrapper) and `tools/executor.js` (the post-tool side effects + Telegram notify + auto-swap).
-- Discord listener issues → `discord-listener/pre-checks.js`.
-- HiveMind protocol issues → `hivemind.js` (push side) and `lessons.js#getLessonsForPrompt` (pull side injection).
+- Add a tool → `src/app/tools/impls/`, `tools/registry.ts`, `domain/prompt/role-tools.ts`.
+- Change safety/exit rules → `src/domain/rules/close-rules.ts` + `tools/safety/*`.
+- Change the LLM contract → `src/app/agent/loop.ts` + `domain/prompt/builder.ts`.
+- Change deploy/close on-chain behavior → `src/adapters/chain/meteora/write-paths.ts` +
+  `client.ts` (post-tool side-effects are in `tools/post/*`).
+- Config schema → `src/domain/schemas/config*.ts` + `config-load.ts`.
+- Dashboard/bridge → `src/adapters/dashboard/` + `dashboard/web/`.
+- **Deployment / ops / secrets / troubleshooting → [`deploy/OPERATIONS.md`](deploy/OPERATIONS.md).**
