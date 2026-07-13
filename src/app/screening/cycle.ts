@@ -173,5 +173,30 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     "screening",
     `invoked agent — steps=${agent.steps} locks=${agent.locks.join(",")} finish=${agent.finishReason}`,
   );
+
+  // Visibility: if the screener ran but did NOT deploy (it has no "skip" tool, so a
+  // decline surfaces as text / no_tool_after_reminder), record WHY so the Decisions
+  // page isn't silent. A successful deploy already logs via the tool's post-hook.
+  const deployed = agent.toolCalls.some((t) => t.name === "deploy_position" && t.ok);
+  if (!deployed) {
+    const scanned = (candidates.value as TopCandidatesResult).scanned;
+    const passed = (candidates.value as TopCandidatesResult).passed;
+    const reasonText = agent.text.trim() || `screener finished without deploying (${agent.finishReason})`;
+    await ctx.repos.decisions.append({
+      id: nextDecisionId(ctx.clock.now()),
+      ts: ctx.clock.now().toISOString(),
+      type: "no_deploy",
+      actor: "SCREENER",
+      pool: null,
+      pool_name: null,
+      summary: sanitizeDecisionText(`Screener reviewed ${picked.length} candidate(s), chose not to deploy`),
+      reason: sanitizeDecisionText(reasonText, 500),
+      risks: [],
+      metrics: { scanned, passed, candidates: picked.length, finish: agent.finishReason },
+      rejected: [],
+    });
+    ctx.logger.info("screening", `no_deploy (screener declined) — finish=${agent.finishReason}`);
+  }
+
   return { kind: "invoked", picked: picked.length, agent };
 }
