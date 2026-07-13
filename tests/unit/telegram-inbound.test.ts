@@ -30,6 +30,17 @@ async function flush(): Promise<void> {
   await new Promise((r) => setTimeout(r, 5));
 }
 
+// Poll until a predicate holds (or time out). Deterministic replacement for a
+// fixed flush() when a test depends on N poll iterations completing — a fixed
+// delay flakes on slow/loaded CI.
+async function waitUntil(pred: () => boolean, timeoutMs = 1000): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitUntil: timed out");
+    await new Promise((r) => setTimeout(r, 2));
+  }
+}
+
 describe("createTelegramInbound", () => {
   it("delivers an authorized private-chat text message", async () => {
     const messages: unknown[] = [];
@@ -181,7 +192,7 @@ describe("createTelegramInbound", () => {
     const handle = inbound.start(async (m) => {
       messages.push(m);
     });
-    await flush();
+    await waitUntil(() => seenOffsets.length >= 2 && messages.length >= 2);
     handle.stop();
     expect(seenOffsets[0]).toBe("0");
     expect(seenOffsets[1]).toBe("12");
