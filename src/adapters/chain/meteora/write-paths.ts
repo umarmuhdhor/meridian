@@ -216,8 +216,12 @@ export function createMeteoraWriteHelpers(deps: WritePathsDeps): MeteoraWriteHel
     const buildPk = deps.pubkeyFromAddress ?? defaultPubkeyFromAddress;
     const newPosition = await deps.newPositionKeypair();
     const walletPk = await buildPk(deps.wallet.address);
-    const totalYLamports = toLamports(plan.amountY);
-    const totalXLamports = toLamports(plan.amountX);
+    // The DLMM SDK calls totalXAmount.isZero()/totalYAmount.isZero() — those are
+    // bn.js methods. Passing a native bigint throws "totalYAmount.isZero is not a
+    // function" and reverts the deploy. Convert lamports (bigint) → BN via decimal string.
+    const BN = (await import("bn.js")).default;
+    const totalYLamports = new BN(toLamports(plan.amountY).toString());
+    const totalXLamports = new BN(toLamports(plan.amountX).toString());
 
     const txHashes: string[] = [];
 

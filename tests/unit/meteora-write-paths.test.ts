@@ -123,11 +123,17 @@ describe("createMeteoraWriteHelpers.deploy", () => {
     expect(spy.initialize).toHaveBeenCalledTimes(1);
     const call = spy.initialize.mock.calls[0]![0] as {
       strategy: { strategyType: string };
-      totalYAmount: bigint;
+      totalXAmount: { isZero: () => boolean; toString: () => string };
+      totalYAmount: { isZero: () => boolean; toString: () => string };
       slippage: number;
     };
     expect(call.strategy.strategyType).toBe("BIDASK");
-    expect(call.totalYAmount).toBe(500_000_000n); // 0.5 SOL in lamports
+    // MUST be a BN (bn.js), not a native bigint — the SDK calls .isZero() on it.
+    // A bigint here throws "totalYAmount.isZero is not a function" and reverts the deploy.
+    expect(typeof call.totalYAmount.isZero).toBe("function");
+    expect(call.totalYAmount.toString()).toBe("500000000"); // 0.5 SOL in lamports
+    expect(call.totalYAmount.isZero()).toBe(false);
+    expect(call.totalXAmount.isZero()).toBe(true); // single-side SOL → X is 0
     expect(call.slippage).toBe(1000);
     expect(sendTx).toHaveBeenCalledTimes(1);
     const signers = sendTx.mock.calls[0]![1];
