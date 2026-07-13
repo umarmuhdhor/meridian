@@ -38,7 +38,10 @@ function formatCandidatesBlock(picked: TopCandidatesResult["picked"]): string {
     .map((p, i) => {
       const feeTvl = p.pool.fee_active_tvl_ratio ?? p.pool.fee_tvl_ratio ?? 0;
       const vol = p.pool.volume_window;
-      return `  [${i + 1}] ${p.pool.name}  pool=${p.pool.pool_address.slice(0, 8)}...  score=${p.score.toFixed(0)}  fee/aTVL=${(feeTvl * 100).toFixed(2)}%  vol=$${vol.toFixed(0)}  organic=${p.pool.organic_score ?? "?"}`;
+      // FULL pool_address — the screener passes this verbatim to get_active_bin /
+      // deploy_position. Truncating it (slice(0,8)+"...") fed the model an invalid
+      // base58 string → "Invalid public key input" every cycle → never deployed.
+      return `  [${i + 1}] ${p.pool.name}  pool=${p.pool.pool_address}  score=${p.score.toFixed(0)}  fee/aTVL=${(feeTvl * 100).toFixed(2)}%  vol=$${vol.toFixed(0)}  organic=${p.pool.organic_score ?? "?"}`;
     })
     .join("\n");
 }
