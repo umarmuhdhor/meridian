@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -43,6 +43,27 @@ describe("writeJsonAtomic", () => {
     await writeJsonAtomic(file, { v: 2 });
     const raw = await fs.readFile(file, "utf8");
     expect(JSON.parse(raw)).toEqual({ v: 2 });
+  });
+
+  // Regression: a single-file Docker bind mount makes rename fail with EBUSY
+  // (the mount pins the inode). The in-place fallback must still persist the data
+  // and clean up the temp — without it the dashboard update_config throws EBUSY.
+  it("falls back to in-place overwrite when rename throws EBUSY", async () => {
+    const dir = await mkTmpDir("ebusy");
+    created.push(dir);
+    const file = path.join(dir, "user-config.json");
+    await writeJsonAtomic(file, { v: 1 }); // seed the "bind-mounted" target
+    const spy = vi
+      .spyOn(fs, "rename")
+      .mockRejectedValueOnce(Object.assign(new Error("busy"), { code: "EBUSY" }));
+    try {
+      await writeJsonAtomic(file, { v: 2 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual({ v: 2 });
+    // Temp sibling cleaned up — only the target remains.
+    expect(await fs.readdir(dir)).toEqual(["user-config.json"]);
   });
 });
 

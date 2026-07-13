@@ -13,6 +13,13 @@ export type LoadError =
  * Atomic JSON write — write to sibling temp file, fsync, rename over target.
  * `rename` is atomic on POSIX for same-filesystem paths, so a crash never leaves
  * a half-written file at the destination.
+ *
+ * Fallback: `rename` over a **single-file Docker bind mount** fails with `EBUSY`
+ * (the mount pins the target inode), and a temp on a different filesystem fails
+ * with `EXDEV`. In both cases we overwrite the target in place (same inode) and
+ * remove the temp. This is slightly less crash-safe than rename but is the only
+ * way to persist a bind-mounted config file — without it the dashboard's
+ * `update_config` throws `EBUSY` on every save.
  */
 export async function writeJsonAtomic(
   filePath: string,
@@ -30,7 +37,21 @@ export async function writeJsonAtomic(
   } finally {
     await fh.close();
   }
-  await fs.rename(tmp, filePath);
+  try {
+    await fs.rename(tmp, filePath);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== "EBUSY" && code !== "EXDEV") throw e;
+    // In-place overwrite: target inode is preserved (bind mount stays valid).
+    const th = await fs.open(filePath, "w");
+    try {
+      await th.writeFile(payload, "utf8");
+      await th.sync();
+    } finally {
+      await th.close();
+    }
+    await fs.rm(tmp, { force: true });
+  }
 }
 
 /**
