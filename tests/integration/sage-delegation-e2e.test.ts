@@ -120,4 +120,25 @@ describe("Sage delegation E2E (bridge + fake Sage over real HTTP)", () => {
     const ds = await ctx.repos.decisions.recent(1);
     expect(ds[0]?.type).toBe("deploy");
   });
+
+  it("rejects a duplicate cycle_id over HTTP (no double deploy)", async () => {
+    const deploy = (cycleId: string) =>
+      fetch(`http://127.0.0.1:${BRIDGE_PORT}/tool`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({
+          name: "deploy_position",
+          args: { pool_address: "goodPool", amount_sol: 0.5, strategy: "bid_ask", bins_below: 40, bins_above: 10, base_mint: "MINT_G" },
+          confirm: true,
+          cycle_id: cycleId,
+        }),
+      });
+    const first = await deploy("e2e-idem");
+    expect(first.status).toBe(200);
+    expect(((await first.json()) as { ok: boolean }).ok).toBe(true);
+    // Same cycle_id again → rejected before executing → exactly one deploy from this pair.
+    const second = await deploy("e2e-idem");
+    expect(second.status).toBe(409);
+    expect(((await second.json()) as { error: string }).error).toMatch(/duplicate/);
+  });
 });
