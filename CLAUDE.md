@@ -74,7 +74,7 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
  domain/ (pure: rules, schemas, prompt, config-load)     adapters/
    rules: close-rules, pnl, exit-signals, scoring,          chain/meteora (real), chain/dry-run
           cooldown, deploy-planning, screening              market/* (jupiter, meteora, rugcheck, + fakes)
-   schemas: 14 Zod shapes    ports/: 25 interfaces          persistence/json/* (9 repos, atomic)
+   schemas: 14 Zod shapes    ports/: 26 interfaces          persistence/json/* (9 repos, atomic)
                                                             swap, llm(+decorators), notify, scheduler,
                                                             logger, hivemind, dashboard (bridge)
 ```
@@ -129,13 +129,14 @@ config + selects adapters + builds `AppContext`; `main()` (L410-606) wires cron/
 - `config-load.ts:147` `parseAppConfig(raw): Result<AppConfig,…>` — two-stage Zod:
   flat (`.passthrough()`) → `flatToNested` → nested. Never throws; returns a Result.
 
-**`src/ports/`** (25 interfaces) — the DI contracts. Chain/trading: `ChainClient`
+**`src/ports/`** (26 interfaces) — the DI contracts. Chain/trading: `ChainClient`
 (writes return `{success}` in-band, never throw), `SwapClient`, `SolanaConnection`,
 `PriceOracle`. Market: `PoolDiscoveryClient`, `TokenInfoClient`, `RugCheckClient`,
 `SmartWalletChecker`, `StudyClient`. Persistence (all `load(): Result` + mutators):
 `ConfigRepo`, `PositionRepo`, `PoolMemoryRepo`, `DecisionLogRepo`, `LessonRepo`,
 `StrategyRepo`, `SmartWalletRepo`, `TokenBlacklistRepo`, `DevBlocklistRepo`. Also
-`LLMClient`, `Notifier`+`LiveMessageHandle`, `TelegramInbound`, `HiveMindClient`,
+`LLMClient`, `SageDecider` (Path 2 screening delegation — agentic, returns prose not
+tool_calls), `Notifier`+`LiveMessageHandle`, `TelegramInbound`, `HiveMindClient`,
 `Clock`, `Scheduler`, `Logger`.
 
 **`src/adapters/`** — implementations.
@@ -163,6 +164,10 @@ config + selects adapters + builds `AppContext`; `main()` (L410-606) wires cron/
   `llm/fake.ts`, plus decorators `with-provider-fallback`, `with-system-role-fallback`,
   `with-tool-choice-retry` (available but **not wired by default** in daemon.ts — the
   loop is intentionally thin, so resilience is opt-in via these decorators).
+- `llm/sage-decider-http.ts` — `SageDecider` impl (Path 2). OpenAI-compatible POST to
+  Hermes' api server; sends `X-Hermes-Session-Key` + CF Access headers + an explicit
+  `User-Agent` (CF blocks default UAs → 403/1010); throws `SageTransportError` on
+  timeout/transport so the screening cycle falls back to the local loop.
 - `notify/` (telegram, telegram-inbound, collecting, null), `scheduler/`
   (interval, manual), `logger/console.ts`, `hivemind/agent-meridian.ts`.
 - `dashboard/` — the control bridge (see § Dashboard bridge).
@@ -256,8 +261,18 @@ The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
    `skip` decision) if at `maxPositions` or `wallet.sol < deployAmountSol + gasReserve`.
 2. **Candidates**: `get_top_candidates` tool → discovery → `hardFilter` → `rankCandidates`.
 3. **0 candidates** → `no_deploy` decision, no LLM.
-4. **LLM**: SCREENER prompt + candidate block, `runAgentLoop` `maxSteps:8`,
-   `requireToolOnFirstStep:true` — the model must call `deploy_position` (or justify).
+4. **Decision** — two deciders, selected by `MERIDIAN_DECIDER`:
+   - default (`loop`): SCREENER prompt + candidate block, `runAgentLoop` `maxSteps:8`,
+     `requireToolOnFirstStep:true` — the local LLM must call `deploy_position` (or justify).
+   - **`sage`** (Path 2): delegate to the external Sage agent via the `SageDecider` port
+     (`src/ports/sage-decider.ts` + `adapters/llm/sage-decider-http.ts`). Sage reasons
+     with its own memory AND deploys itself through the dashboard bridge, so it returns
+     only prose — "did a deploy happen?" is answered by **position-id set diff**
+     (robust to a concurrent close), not the text. A `cycle_id` is passed for
+     idempotency. On transport error/timeout → **fall back to the local loop** (same
+     `cycle_id`); skipped if a deploy already landed (no double-deploy). A clean Sage
+     "no-deploy" is NOT a failure — never falls back on it. Full ops:
+     [`deploy/SAGE-MERIDIAN-ROLLOUT.md`](deploy/SAGE-MERIDIAN-ROLLOUT.md).
 
 ### Management cycle (deterministic decides, LLM only executes)
 1. `getMyPositions({force:true})`; `planForPosition` per position:
@@ -343,6 +358,10 @@ happens when a file is served over the bridge. In production these live on the
 | `MERIDIAN_DEMO` | `true` forces the fake LLM. |
 | `DASHBOARD_ENABLED` / `DASHBOARD_PORT` / `DASHBOARD_TOKEN` | bridge on/off, port (8787), Bearer token. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_ALLOWED_USER_IDS` | ops surface + auth. |
+| `MERIDIAN_TELEGRAM_INBOUND` | `false` → Calisto is notify-only (outbound cards, NO inbound LLM REPL). Default (unset) = inbound on. |
+| **`MERIDIAN_DECIDER`** | `sage` → screening delegates the deploy decision to Sage (Path 2); anything else / unset = local LLM loop. |
+| `SAGE_BASE_URL` / `SAGE_API_KEY` / `SAGE_SESSION_KEY` / `SAGE_TIMEOUT_MS` | Sage endpoint (Hermes api), memory-scope header, delegation timeout (default 90s). Only read when `MERIDIAN_DECIDER=sage`. |
+| `SAGE_CF_ACCESS_CLIENT_ID` / `SAGE_CF_ACCESS_CLIENT_SECRET` | CF Access service-token headers for the Sage endpoint (when fronted by Cloudflare Access). |
 | `SOL_PRICE_USD` | static-price fallback (default 150). |
 | `DRY_RUN` | **surfaced only as a HiveMind capability flag — NOT a gating var in the TS code.** |
 
@@ -358,8 +377,13 @@ A `node:http` server (zero external deps) bound to **`127.0.0.1` only** (never
 - Routes: `GET /health`, `/state/positions` (`?force=1` throttled 1×/10s),
   `/state/summary`, `/state/file/:name` (whitelisted, `user-config` redacted),
   `/events` (SSE — piggybacks the PnL-poller cache, **no new RPC**), `POST /tool`
-  (allowlist + write `confirm:true` + in-flight lock), `POST /chat` (GENERAL tick,
-  read-only via `CHAT_READ_TOOLS`).
+  (allowlist + write `confirm:true` + in-flight lock + optional `cycle_id` idempotency),
+  `POST /chat` (GENERAL tick, read-only via `CHAT_READ_TOOLS`).
+- **`cycle_id` idempotency** (`dashboard/idempotency.ts`): a write carrying a `cycle_id`
+  commits the key on success; a later write with the same key → 409. Guards the Path 2
+  delegate→timeout→fallback double-deploy on the bridge path (the bridge bypasses the
+  agent once-per-session lock — see `inflight.ts`). Path 2's Sage deploys go through
+  this `/tool` path, so all safety gates + post-hooks + the card notification still fire.
 - **The Next.js web app** (`dashboard/web/`) is the only public surface. It talks to
   the bridge server-side only (token never reaches the browser) via same-origin
   `/api/*` proxies. PIN auth: `middleware.ts` (iron-session cookie) + `lib/auth-core.ts`
@@ -374,6 +398,12 @@ cron control `/pause /resume /stop` (need `scheduler`/`shutdown` deps); write co
 `/close <n> /closeall /deploy <pool> [sol]` (gated on `deps.writesEnabled`). Free-form
 text → GENERAL agent tick (`GENERAL_TOOLS`, `maxSteps:8`). **Auth (chat-id / user
 allowlist) is upstream** (the inbound adapter), not in the router.
+
+**Notify-only mode**: with `MERIDIAN_TELEGRAM_INBOUND=false` the daemon never starts the
+inbound REPL — the bot ("Calisto") only posts outbound deploy/close cards, no LLM
+replies. In production this is set so **Sage** (the Hermes bot in the same group) is the
+sole conversational brain; Calisto is a static notifier. See
+[`deploy/SAGE-MERIDIAN-ROLLOUT.md`](deploy/SAGE-MERIDIAN-ROLLOUT.md).
 
 ---
 

@@ -14,8 +14,10 @@
 | **Branch** | `dashboard` (this is the deployed branch, not `main`) |
 | **Host** | Tencent Cloud VPS, **Hong Kong**, `ubuntu@101.32.216.139` (Ubuntu 24.04) |
 | **App dir** | `~/meridian` · state volume `~/meridian-data` → `/opt/data` |
-| **Runtime** | 3 Docker containers (below), `sudo docker compose` |
+| **Runtime** | Docker: `meridian`, `meridian-web`, `meridian-cloudflared`, **`meridian-bridge-proxy`** (+ `n8n`), `sudo docker compose` |
 | **Trading** | LIVE — real wallet, `DRY_RUN=false`, `MERIDIAN_WRITE_UNSAFE=true` |
+| **Screening decider** | **Sage** (Hermes agent on vivobook), `MERIDIAN_DECIDER=sage` — local LLM loop is the fallback. See [`SAGE-MERIDIAN-ROLLOUT.md`](SAGE-MERIDIAN-ROLLOUT.md). |
+| **Telegram** | "Calisto" = notify-only (`MERIDIAN_TELEGRAM_INBOUND=false`, cards only); **Sage** (@SageHermesAnd_bot) is the conversational brain in the group. |
 | **Dashboard** | https://calisto.nafidinara.com (Cloudflare Access + 6-digit PIN) |
 | **Deploy** | push to `dashboard` → GitHub Actions → GHCR → VPS auto-pulls |
 | **Registry** | `ghcr.io/umarmuhdhor/meridian` (private) |
@@ -55,7 +57,12 @@ selecting one PM2 app via `--only`:
 - **`meridian-web`** — the Next.js dashboard. Uses `network_mode: "service:meridian"`
   to share the daemon's namespace so it can reach the localhost bridge and listen
   on `:3000` there. Redeploys with **zero daemon interruption**.
-- **`cloudflared`** — Cloudflare Tunnel connector → `http://meridian:3000`.
+- **`cloudflared`** — Cloudflare Tunnel connector → `http://meridian:3000` (calisto),
+  and `mrd-bridge.nafidinara.com → http://meridian:8788` (the bridge, for Sage).
+- **`meridian-bridge-proxy`** — socat `8788→127.0.0.1:8787`, `network_mode: service:meridian`
+  so it re-attaches on every `--force-recreate`. Exposes the loopback bridge to the tunnel
+  so **Sage** (Path 2 decider, on vivobook) can read/deploy via CF Access. Details:
+  [`SAGE-MERIDIAN-ROLLOUT.md`](SAGE-MERIDIAN-ROLLOUT.md).
 
 Why split: a dashboard change should not restart a live trading daemon.
 
@@ -158,7 +165,9 @@ echo "<GITHUB_PAT_with_read:packages>" | sudo docker login ghcr.io -u umarmuhdho
 | `MERIDIAN_SESSION_SECRET` | 32-byte hex, signs the dashboard session cookie. |
 | `CLOUDFLARE_TUNNEL_TOKEN` | cloudflared connector token. |
 | `DRY_RUN` / `MERIDIAN_WRITE_UNSAFE` | live gates: `false` / `true`. |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | ops surface. |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Calisto bot + group. |
+| `MERIDIAN_TELEGRAM_INBOUND` | `false` → Calisto notify-only (no LLM replies; Sage is the brain). |
+| `MERIDIAN_DECIDER` + `SAGE_BASE_URL` / `SAGE_API_KEY` / `SAGE_SESSION_KEY` / `SAGE_TIMEOUT_MS` / `SAGE_CF_ACCESS_CLIENT_ID` / `SAGE_CF_ACCESS_CLIENT_SECRET` | Path 2 Sage delegation — full details in [`SAGE-MERIDIAN-ROLLOUT.md`](SAGE-MERIDIAN-ROLLOUT.md). |
 | `HELIUS_API_KEY` | **unused in the TS rewrite** (leftover); safe to leave blank. |
 
 Adapter selection lives in `docker-compose.yml` env, not `.env`:
@@ -246,6 +255,8 @@ should be `302` (redirect into Access).
 | Browser shows red "Dangerous" | Chrome Enhanced Safe Browsing false positive on a new domain + login form (not on Google's blocklist — transparency report shows "no available data"). Standard Protection users don't see it. |
 | Deploy didn't recreate the container | `docker compose up` skips recreate on a repointed tag — deploy.sh uses `--force-recreate`. |
 | `MERIDIAN_IMAGE`/`MERIDIAN_REG` override ignored | `sudo docker compose` strips env without `-E`. Only relevant for local-registry testing. |
+| Screening always logs `sage delegation failed, falling back` | Sage endpoint down/slow, or `mrd-bridge` unreachable (bridge-proxy orphaned after a recreate — it's a compose service now, `up -d --force-recreate` fixes it), or CF 403/1010 (missing/blocked UA). Trading continues on the local loop. Full Path 2 gotchas: [`SAGE-MERIDIAN-ROLLOUT.md`](SAGE-MERIDIAN-ROLLOUT.md). |
+| Sage silent in Telegram group / Calisto still replying | Sage: check `allowed_chats` + bot privacy (BotFather `/setprivacy`). Calisto: ensure `MERIDIAN_TELEGRAM_INBOUND=false`. |
 
 ---
 
@@ -269,8 +280,11 @@ should be `302` (redirect into Access).
 |---|---|
 | `.github/workflows/deploy-dashboard.yml` | the CI/CD pipeline |
 | `deploy/deploy.sh` | on-VPS pull → cutover → health-check → rollback |
-| `docker-compose.yml` | the 3-container production stack (standalone VPS) |
+| `docker-compose.yml` | the production stack: meridian, meridian-web, cloudflared, **bridge-proxy** |
 | `deploy/docker-compose.vivobook.yml` | Caddy + CF-Tunnel variant (retired host) |
+| `deploy/SAGE-MERIDIAN-ROLLOUT.md` | **Path 2 (Sage decider) — live architecture & ops** |
+| `deploy/cf-setup-path2.sh` | idempotent Cloudflare setup (DNS + Access) for the Sage transport |
+| `deploy/hermes-meridian-plugin/` | the Hermes `meridian` plugin (source of truth; installed on vivobook Sage profile) |
 | `Dockerfile` | node:22 image; `postinstall` runs `patch-anchor.js` |
 | `ecosystem.config.cjs` | PM2 apps `meridian` + `meridian-web` (selected via `--only`) |
 | `dashboard/web/` | the Next.js dashboard (auth in `middleware.ts`, `lib/auth-core.ts`) |
