@@ -1,0 +1,13 @@
+name: meridian
+version: 0.1.0
+description: "Meridian DLMM trading bridge — read positions/candidates/wallet, and (on request) deploy/close/claim by calling the Meridian dashboard bridge over the tailnet. Reads MERIDIAN_BRIDGE_URL + MERIDIAN_BRIDGE_TOKEN; tools stay registered but refuse to dispatch until both are set."
+author: nafidinara
+kind: backend
+provides_tools:
+  - mrd_get_positions
+  - mrd_get_summary
+  - mrd_get_wallet
+  - mrd_get_candidates
+  - mrd_deploy_position
+  - mrd_close_position
+  - mrd_claim_fees

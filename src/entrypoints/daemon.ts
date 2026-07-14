@@ -23,6 +23,8 @@ import type { PriceOracle } from "../ports/price-oracle.js";
 import type { SwapClient } from "../ports/swap-client.js";
 import { createOpenRouterLLMClient } from "../adapters/llm/openrouter.js";
 import { createFakeLLM } from "../adapters/llm/fake.js";
+import { createSageDeciderHttp } from "../adapters/llm/sage-decider-http.js";
+import type { SageDecider } from "../ports/sage-decider.js";
 import { createCollectingNotifier } from "../adapters/notify/collecting-notifier.js";
 import { createTelegramNotifier } from "../adapters/notify/telegram.js";
 import type { Notifier } from "../ports/notifier.js";
@@ -453,6 +455,34 @@ async function main(): Promise<void> {
     return llm.generalModel;
   };
 
+  // ── Sage delegation (env-gated; OFF by default) ──────────────────────────
+  // MERIDIAN_DECIDER=sage + a configured Sage endpoint → screening delegates the
+  // deploy decision to the external memory-backed agent, local LLM loop as fallback.
+  // Any missing piece → screeningExtra stays {} and the daemon runs exactly as before.
+  const sageDecider: SageDecider | undefined =
+    process.env.MERIDIAN_DECIDER === "sage" && process.env.SAGE_BASE_URL && process.env.SAGE_API_KEY
+      ? createSageDeciderHttp({
+          baseUrl: process.env.SAGE_BASE_URL,
+          apiKey: process.env.SAGE_API_KEY,
+          ...(process.env.SAGE_MODEL ? { model: process.env.SAGE_MODEL } : {}),
+          ...(process.env.SAGE_CF_ACCESS_CLIENT_ID && process.env.SAGE_CF_ACCESS_CLIENT_SECRET
+            ? {
+                cfAccessClientId: process.env.SAGE_CF_ACCESS_CLIENT_ID,
+                cfAccessClientSecret: process.env.SAGE_CF_ACCESS_CLIENT_SECRET,
+              }
+            : {}),
+        })
+      : undefined;
+  const screeningExtra = sageDecider
+    ? {
+        decider: "sage" as const,
+        sage: sageDecider,
+        sageSessionKey: process.env.SAGE_SESSION_KEY ?? "meridian-trading",
+        sageTimeoutMs: Number(process.env.SAGE_TIMEOUT_MS ?? 90_000),
+      }
+    : {};
+  if (sageDecider) console.log(`  decider: SAGE (${process.env.SAGE_BASE_URL}) — local loop fallback armed`);
+
   // ── Dashboard bridge (env-gated; the ONLY dashboard touch-point in core) ──
   // Without DASHBOARD_ENABLED=true the bridge module is never even imported, so daemon
   // behavior is byte-for-byte identical. Placed before the autonomous/one-shot split so
@@ -485,7 +515,7 @@ async function main(): Promise<void> {
     const screenMs = ctx.config.schedule.screeningIntervalMin * 60_000;
     const manageMs = ctx.config.schedule.managementIntervalMin * 60_000;
     console.log(`  screening every ${screenMs / 1000}s | management every ${manageMs / 1000}s`);
-    scheduler.every(screenMs, () => runScreeningCycle({ ctx, llm, registry, model: modelFor("screening") }).then(() => {}), "screening");
+    scheduler.every(screenMs, () => runScreeningCycle({ ctx, llm, registry, model: modelFor("screening"), ...screeningExtra }).then(() => {}), "screening");
     scheduler.every(manageMs, () => runManagementCycle({ ctx, llm, registry, model: modelFor("management") }).then(() => {}), "management");
     const pollerHandle = createPnlPoller({
       clock: ctx.clock,
@@ -610,7 +640,7 @@ async function main(): Promise<void> {
   }
 
   // One-shot mode — run one screening cycle for demo.
-  const outcome = await runScreeningCycle({ ctx, llm, registry, model: modelFor("screening") });
+  const outcome = await runScreeningCycle({ ctx, llm, registry, model: modelFor("screening"), ...screeningExtra });
   console.log("\n─── screening cycle ───");
   console.log(`outcome: ${outcome.kind}`);
   if (outcome.kind === "invoked") {

@@ -16,6 +16,7 @@ import type { SseHub } from "./sse.js";
 import { buildStateSummary } from "./state-summary.js";
 import { isAllowedTool, isWriteTool, resolveFile, CHAT_READ_TOOLS } from "./allowlist.js";
 import { acquire, release } from "./inflight.js";
+import { bridgeIdempotency } from "./idempotency.js";
 import { redactSecrets } from "./redact.js";
 import { adaptArgs, adaptResult } from "./tool-adapters.js";
 import { assembleWalletBalance } from "./wallet-balance.js";
@@ -154,13 +155,24 @@ export async function handleRequest(
     } catch {
       return json(res, 400, { error: "invalid json" });
     }
-    const { name, args = {}, confirm = false } =
-      (body as { name?: string; args?: Record<string, unknown>; confirm?: boolean }) || {};
+    const { name, args = {}, confirm = false, cycle_id } =
+      (body as {
+        name?: string;
+        args?: Record<string, unknown>;
+        confirm?: boolean;
+        cycle_id?: string;
+      }) || {};
     if (!name) return json(res, 400, { error: "missing name" });
     if (!isAllowedTool(name)) return json(res, 403, { error: `tool not allowed: ${name}` });
 
     const write = isWriteTool(name);
     if (write && confirm !== true) return json(res, 403, { error: "confirm required" });
+    // Idempotency: a write carrying a cycle_id that already committed (e.g. the
+    // screening delegation succeeded, then its fallback retried the same cycle) is a
+    // duplicate — reject before acquiring the lock or executing. See idempotency.ts.
+    const cycleId = typeof cycle_id === "string" && cycle_id.length > 0 ? cycle_id : undefined;
+    if (write && cycleId && bridgeIdempotency.seen(cycleId))
+      return json(res, 409, { error: "duplicate cycle_id", cycle_id: cycleId });
     if (write && !acquire(name)) return json(res, 409, { error: "in-flight", tool: name });
 
     try {
@@ -168,6 +180,8 @@ export async function handleRequest(
       const adaptedArgs = adaptArgs(name, args ?? {});
       const outcome = await executeTool(registry, { name, args: adaptedArgs }, ctx);
       if (outcome.ok) {
+        // Commit the idempotency key only on success, so a failed write stays retryable.
+        if (write && cycleId) bridgeIdempotency.commit(cycleId);
         // get_wallet_balance needs async token enrichment (tokens[] + total_usd) that a
         // pure result adapter can't do — assemble the web shape from the chain client.
         const value =

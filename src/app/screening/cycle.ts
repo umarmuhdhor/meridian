@@ -1,5 +1,6 @@
 import type { AppContext } from "../tools/context.js";
 import type { LLMClient } from "../../ports/llm-client.js";
+import type { SageDecider } from "../../ports/sage-decider.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { runAgentLoop, type AgentLoopResult } from "../agent/loop.js";
 import { executeTool } from "../tools/execute.js";
@@ -13,15 +14,47 @@ export interface ScreeningCycleDeps {
   llm: LLMClient;
   registry: ToolRegistry;
   model: string;
+  /**
+   * Who makes the deploy decision. "loop" (default) = local LLM ReAct loop.
+   * "sage" = delegate to an external agent that reasons with memory AND executes
+   * the deploy itself via the dashboard bridge; the local loop becomes the fallback.
+   */
+  decider?: "loop" | "sage";
+  sage?: SageDecider;
+  /** Memory scope for the Sage session (X-Hermes-Session-Key). */
+  sageSessionKey?: string;
+  /** Hard timeout for a Sage delegation before falling back. */
+  sageTimeoutMs?: number;
 }
 
 export type ScreeningOutcome =
   | { kind: "skipped"; reason: string }
   | { kind: "no_deploy"; picked: number; rejection_summary: readonly string[] }
-  | { kind: "invoked"; picked: number; agent: AgentLoopResult };
+  | { kind: "invoked"; picked: number; agent: AgentLoopResult }
+  | { kind: "delegated"; picked: number; deployed: boolean; text: string };
 
 function nextDecisionId(now: Date): string {
   return `dec_${now.getTime()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** DRY helper: append a `no_deploy` decision so the Decisions page is never silent. */
+async function appendNoDeploy(
+  ctx: AppContext,
+  args: { summary: string; reason: string; metrics: Record<string, unknown>; rejected?: string[] },
+): Promise<void> {
+  await ctx.repos.decisions.append({
+    id: nextDecisionId(ctx.clock.now()),
+    ts: ctx.clock.now().toISOString(),
+    type: "no_deploy",
+    actor: "SCREENER",
+    pool: null,
+    pool_name: null,
+    summary: sanitizeDecisionText(args.summary),
+    reason: sanitizeDecisionText(args.reason, 500),
+    risks: [],
+    metrics: args.metrics,
+    rejected: args.rejected ?? [],
+  });
 }
 
 interface TopCandidatesResult {
@@ -159,47 +192,89 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     `bins_below floor: ${ctx.config.strategy.minBinsBelow}. Default: ${ctx.config.strategy.defaultBinsBelow}.`,
   ].join("\n");
 
-  const agent = await runAgentLoop(
-    { llm, registry, ctx },
-    {
-      role: "SCREENER",
-      goal,
-      systemPrompt,
-      model,
-      maxSteps: 8,
-      toolFilter: SCREENER_TOOLS,
-      requireToolOnFirstStep: true,
-    },
-  );
+  const scanned = (candidates.value as TopCandidatesResult).scanned;
+  const passed = (candidates.value as TopCandidatesResult).passed;
 
-  ctx.logger.info(
-    "screening",
-    `invoked agent — steps=${agent.steps} locks=${agent.locks.join(",")} finish=${agent.finishReason}`,
-  );
+  // Snapshot the set of open position ids BEFORE any deploy. A new id appearing after
+  // is our robust "a deploy landed" signal — resilient to a concurrent management
+  // close (which removes an OLD id but adds none), unlike a raw count delta.
+  const beforeIds = new Set(positionsSnap.positions.map((p) => p.position));
+  const detectDeploy = async (): Promise<boolean> => {
+    const after = await ctx.chain.getMyPositions({ force: true });
+    return after.positions.some((p) => !beforeIds.has(p.position));
+  };
 
-  // Visibility: if the screener ran but did NOT deploy (it has no "skip" tool, so a
-  // decline surfaces as text / no_tool_after_reminder), record WHY so the Decisions
-  // page isn't silent. A successful deploy already logs via the tool's post-hook.
-  const deployed = agent.toolCalls.some((t) => t.name === "deploy_position" && t.ok);
-  if (!deployed) {
-    const scanned = (candidates.value as TopCandidatesResult).scanned;
-    const passed = (candidates.value as TopCandidatesResult).passed;
-    const reasonText = agent.text.trim() || `screener finished without deploying (${agent.finishReason})`;
-    await ctx.repos.decisions.append({
-      id: nextDecisionId(ctx.clock.now()),
-      ts: ctx.clock.now().toISOString(),
-      type: "no_deploy",
-      actor: "SCREENER",
-      pool: null,
-      pool_name: null,
-      summary: sanitizeDecisionText(`Screener reviewed ${picked.length} candidate(s), chose not to deploy`),
-      reason: sanitizeDecisionText(reasonText, 500),
-      risks: [],
-      metrics: { scanned, passed, candidates: picked.length, finish: agent.finishReason },
-      rejected: [],
-    });
-    ctx.logger.info("screening", `no_deploy (screener declined) — finish=${agent.finishReason}`);
+  // The local LLM ReAct loop — the default decider AND the fallback when Sage fails.
+  const runLocalLoop = async (): Promise<ScreeningOutcome> => {
+    const agent = await runAgentLoop(
+      { llm, registry, ctx },
+      {
+        role: "SCREENER",
+        goal,
+        systemPrompt,
+        model,
+        maxSteps: 8,
+        toolFilter: SCREENER_TOOLS,
+        requireToolOnFirstStep: true,
+      },
+    );
+    ctx.logger.info(
+      "screening",
+      `invoked agent — steps=${agent.steps} locks=${agent.locks.join(",")} finish=${agent.finishReason}`,
+    );
+    // Visibility: if the screener ran but did NOT deploy (it has no "skip" tool, so a
+    // decline surfaces as text / no_tool_after_reminder), record WHY. A successful
+    // deploy already logs via the tool's post-hook.
+    const deployed = agent.toolCalls.some((t) => t.name === "deploy_position" && t.ok);
+    if (!deployed) {
+      await appendNoDeploy(ctx, {
+        summary: `Screener reviewed ${picked.length} candidate(s), chose not to deploy`,
+        reason: agent.text.trim() || `screener finished without deploying (${agent.finishReason})`,
+        metrics: { scanned, passed, candidates: picked.length, finish: agent.finishReason },
+      });
+      ctx.logger.info("screening", `no_deploy (screener declined) — finish=${agent.finishReason}`);
+    }
+    return { kind: "invoked", picked: picked.length, agent };
+  };
+
+  // Sage delegation path: Sage decides AND deploys via the bridge itself. We only get
+  // prose back, so "did a deploy happen?" is answered by reconciliation, not the text.
+  if (deps.decider === "sage" && deps.sage) {
+    // cycle_id is the deploy idempotency key, shared with the fallback so a
+    // delegate→timeout→fallback sequence can't double-deploy (bridge rejects the dup).
+    const cycleId = `screen-${ctx.clock.now().toISOString().slice(0, 16)}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const result = await deps.sage.decide({
+        systemPrompt,
+        goal,
+        sessionKey: deps.sageSessionKey ?? "meridian-trading",
+        cycleId,
+        timeoutMs: deps.sageTimeoutMs ?? 90_000,
+      });
+      const deployed = await detectDeploy();
+      if (deployed) {
+        ctx.logger.info("screening", `sage delegated — deploy landed (cycle=${cycleId})`);
+      } else {
+        await appendNoDeploy(ctx, {
+          summary: `Sage reviewed ${picked.length} candidate(s), chose not to deploy`,
+          reason: result.text || "sage declined",
+          metrics: { scanned, passed, candidates: picked.length, decider: "sage" },
+        });
+        ctx.logger.info("screening", "sage delegated — no_deploy");
+      }
+      return { kind: "delegated", picked: picked.length, deployed, text: result.text };
+    } catch (err) {
+      const msg = (err as Error)?.message ?? String(err);
+      // Transport/timeout. If Sage already deployed before dying, do NOT fall back
+      // (that would double-deploy). Only fall back when no new position landed.
+      if (await detectDeploy()) {
+        ctx.logger.warn("screening", `sage errored after a deploy landed — NOT falling back (${msg})`);
+        return { kind: "delegated", picked: picked.length, deployed: true, text: "(sage errored after deploy)" };
+      }
+      ctx.logger.warn("screening", `sage delegation failed, falling back to local loop: ${msg}`);
+      return runLocalLoop();
+    }
   }
 
-  return { kind: "invoked", picked: picked.length, agent };
+  return runLocalLoop();
 }
