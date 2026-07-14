@@ -90,3 +90,5 @@ services:
     depends_on:
       - meridian
     networks: [mnet]
+
+# path2: Calisto notify-only + bridge-proxy sidecar (deploy trigger 2026-07-14)
