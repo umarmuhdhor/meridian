@@ -23,12 +23,16 @@ export type FetchLike = (
 ) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown>; text: () => Promise<string> }>;
 
 export interface SageDeciderHttpOptions {
-  /** Base URL of the Hermes api server, e.g. http://100.x.y.z:8642 (no trailing /v1). */
+  /** Base URL of the Hermes api server, e.g. https://sage-api.nafidinara.com (no trailing /v1). */
   baseUrl: string;
   /** API_SERVER_KEY for the Hermes api server. */
   apiKey: string;
   /** Model id the api server advertises (default "hermes-agent"). */
   model?: string;
+  /** Cloudflare Access service-token id — sent as CF-Access-Client-Id when the endpoint is behind CF Access. */
+  cfAccessClientId?: string;
+  /** Cloudflare Access service-token secret — sent as CF-Access-Client-Secret. */
+  cfAccessClientSecret?: string;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: FetchLike;
 }
@@ -55,14 +59,20 @@ export function createSageDeciderHttp(opts: SageDeciderHttpOptions): SageDecider
     async decide(input: SageDecideInput): Promise<SageDecideResult> {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), input.timeoutMs);
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${opts.apiKey}`,
+        "X-Hermes-Session-Key": input.sessionKey,
+      };
+      // Cloudflare Access service-token auth (when the endpoint is fronted by CF Access).
+      if (opts.cfAccessClientId && opts.cfAccessClientSecret) {
+        headers["CF-Access-Client-Id"] = opts.cfAccessClientId;
+        headers["CF-Access-Client-Secret"] = opts.cfAccessClientSecret;
+      }
       try {
         const res = await doFetch(`${base}/v1/chat/completions`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${opts.apiKey}`,
-            "X-Hermes-Session-Key": input.sessionKey,
-          },
+          headers,
           body: JSON.stringify({
             model,
             stream: false,

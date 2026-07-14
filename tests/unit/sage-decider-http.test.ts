@@ -43,6 +43,32 @@ describe("createSageDeciderHttp", () => {
     expect(seenHeaders["X-Hermes-Session-Key"]).toBe("meridian-trading");
   });
 
+  it("sends CF Access service-token headers when configured", async () => {
+    let seen: Record<string, string> = {};
+    const fetchImpl: FetchLike = async (_url, init) => {
+      seen = init.headers;
+      return okJson("ok");
+    };
+    const sage = createSageDeciderHttp({
+      baseUrl: "http://x:8642", apiKey: "k", fetchImpl,
+      cfAccessClientId: "cid.access", cfAccessClientSecret: "csecret",
+    });
+    await sage.decide(input);
+    expect(seen["CF-Access-Client-Id"]).toBe("cid.access");
+    expect(seen["CF-Access-Client-Secret"]).toBe("csecret");
+  });
+
+  it("omits CF Access headers when not configured", async () => {
+    let seen: Record<string, string> = {};
+    const fetchImpl: FetchLike = async (_url, init) => {
+      seen = init.headers;
+      return okJson("ok");
+    };
+    const sage = createSageDeciderHttp({ baseUrl: "http://x:8642", apiKey: "k", fetchImpl });
+    await sage.decide(input);
+    expect(seen["CF-Access-Client-Id"]).toBeUndefined();
+  });
+
   it("includes cycle_id in the user message", async () => {
     let body: unknown;
     const fetchImpl: FetchLike = async (_url, init) => {

@@ -44,6 +44,12 @@ def _request(method: str, path: str, body: Optional[dict] = None, timeout: float
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {_token()}")
+    # Cloudflare Access service-token auth (when the bridge is fronted by CF Access).
+    cf_id = os.getenv("MERIDIAN_BRIDGE_CF_CLIENT_ID")
+    cf_secret = os.getenv("MERIDIAN_BRIDGE_CF_CLIENT_SECRET")
+    if cf_id and cf_secret:
+        req.add_header("CF-Access-Client-Id", cf_id)
+        req.add_header("CF-Access-Client-Secret", cf_secret)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:

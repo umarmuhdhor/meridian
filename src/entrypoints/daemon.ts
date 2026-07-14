@@ -465,6 +465,12 @@ async function main(): Promise<void> {
           baseUrl: process.env.SAGE_BASE_URL,
           apiKey: process.env.SAGE_API_KEY,
           ...(process.env.SAGE_MODEL ? { model: process.env.SAGE_MODEL } : {}),
+          ...(process.env.SAGE_CF_ACCESS_CLIENT_ID && process.env.SAGE_CF_ACCESS_CLIENT_SECRET
+            ? {
+                cfAccessClientId: process.env.SAGE_CF_ACCESS_CLIENT_ID,
+                cfAccessClientSecret: process.env.SAGE_CF_ACCESS_CLIENT_SECRET,
+              }
+            : {}),
         })
       : undefined;
   const screeningExtra = sageDecider

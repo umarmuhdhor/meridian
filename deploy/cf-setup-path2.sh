@@ -57,12 +57,13 @@ if [ "$ST_OK" = "True" ]; then
   echo "  CF-Access-Client-Id:     $CLIENT_ID"
   echo "  CF-Access-Client-Secret: $CLIENT_SECRET   <-- SAVE NOW, shown once"
 else
-  echo "service token create failed (may already exist): $(echo "$ST_JSON" | jqget 'd.get("errors")')"
-  echo "list existing:"; curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
-    "$API/accounts/$ACCT/access/service_tokens" | jqget "[ (t['id'],t['name'],t['client_id']) for t in d.get('result',[]) ]"
-  echo "Re-run after deleting the old 'meridian-sage' token, or reuse its saved secret."
+  echo "service token create failed: $(echo "$ST_JSON" | jqget 'd.get("errors")')"
+  echo "(if this is an auth error, the ACCESS token is invalid or lacks Access:Service Tokens Write)"
+  echo "existing service tokens:"; curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+    "$API/accounts/$ACCT/access/service_tokens" | jqget "[ (t['id'],t['name'],t['client_id']) for t in (d.get('result') or []) ]"
   TOKEN_ID=$(curl -s -H "Authorization: Bearer $ACCESS_TOKEN" "$API/accounts/$ACCT/access/service_tokens" \
-    | jqget "next((t['id'] for t in d.get('result',[]) if t['name']=='meridian-sage'),'')")
+    | jqget "next((t['id'] for t in (d.get('result') or []) if t.get('name')=='meridian-sage'),'')")
+  if [ -z "$TOKEN_ID" ]; then echo "No usable Access token — fix the token or run without CF Access."; exit 1; fi
 fi
 
 app_upsert(){ # hostname label
