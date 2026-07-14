@@ -25,6 +25,8 @@ export const mgmt: ManagementConfig = {
   repeatDeployCooldownHours: 12,
   repeatDeployCooldownScope: "token",
   repeatDeployCooldownMinFeeEarnedPct: 1.5,
+  autoSwapSlippageBps: 300,
+  autoSwapMinUsd: 0.5,
 };
 
 // Threshold values here mirror the former inline `defaultThresholds` constants so

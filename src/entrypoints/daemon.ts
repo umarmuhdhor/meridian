@@ -521,6 +521,7 @@ async function main(): Promise<void> {
       clock: ctx.clock,
       logger: ctx.logger,
       chain: ctx.chain,
+      swap: ctx.swap,
       notifier: ctx.notifier,
       scheduler,
       positionRepo: ctx.repos.positions,

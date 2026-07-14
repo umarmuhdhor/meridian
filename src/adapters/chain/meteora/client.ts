@@ -394,7 +394,7 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
       const conn = connection.raw as InstanceType<typeof web3.Connection>;
       const owner = new web3.PublicKey(wallet.address);
       const TOKEN_PROGRAM_ID = new web3.PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-      let holdings: { mint: string; balance: number }[] = [];
+      let holdings: { mint: string; balance: number; raw: string }[] = [];
       try {
         const resp = await conn.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID });
         for (const { account } of resp.value) {
@@ -402,8 +402,13 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
           const info = (account.data as any)?.parsed?.info;
           const mint: unknown = info?.mint;
           const amt: unknown = info?.tokenAmount?.uiAmount;
+          const rawStr: unknown = info?.tokenAmount?.amount;
           if (typeof mint === "string" && typeof amt === "number" && amt > 0) {
-            holdings.push({ mint, balance: amt });
+            // `amount` is the raw base-unit integer STRING; keep it verbatim so callers can
+            // swap the exact holding at full precision (uiAmount can't be reversed without
+            // decimals, and Number() would lose precision above 2^53).
+            const raw = typeof rawStr === "string" ? rawStr : "0";
+            holdings.push({ mint, balance: amt, raw });
           }
         }
       } catch (err) {
@@ -423,6 +428,7 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
           mint: h.mint,
           symbol: null,
           balance: h.balance,
+          raw: h.raw,
           usd: typeof p === "number" ? roundNum(h.balance * p, 2) : null,
         };
       });

@@ -42,6 +42,8 @@ export function flatToNested(flat: FlatUserConfig): AppConfig {
       repeatDeployCooldownHours: flat.repeatDeployCooldownHours,
       repeatDeployCooldownScope: flat.repeatDeployCooldownScope,
       repeatDeployCooldownMinFeeEarnedPct: flat.repeatDeployCooldownMinFeeEarnedPct,
+      autoSwapSlippageBps: flat.autoSwapSlippageBps,
+      autoSwapMinUsd: flat.autoSwapMinUsd,
     },
     strategy: {
       strategy: flat.strategy,

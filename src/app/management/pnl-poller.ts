@@ -1,12 +1,14 @@
 import type { Clock } from "../../ports/clock.js";
 import type { Logger } from "../../ports/logger.js";
 import type { ChainClient } from "../../ports/chain-client.js";
+import type { SwapClient } from "../../ports/swap-client.js";
 import type { Notifier } from "../../ports/notifier.js";
 import type { Scheduler } from "../../ports/scheduler.js";
 import type { PositionRepo } from "../../ports/position-repo.js";
 import type { ManagementConfig } from "../../domain/schemas/config.js";
 import type { OnChainPosition, PositionsSnapshot } from "../../domain/schemas/chain.js";
 import { assessPnl } from "../../domain/rules/pnl.js";
+import { consolidateBaseToSol } from "./consolidate.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_CONFIRM_DELAY_MS = 15_000;
@@ -110,6 +112,7 @@ export interface PnlPollerDeps {
   clock: Clock;
   logger: Logger;
   chain: ChainClient;
+  swap: SwapClient;
   notifier: Notifier;
   scheduler: Scheduler;
   positionRepo: PositionRepo;
@@ -181,6 +184,18 @@ export function createPnlPoller(deps: PnlPollerDeps): PnlPollerHandle {
           const result = await deps.chain.closePosition(a.positionAddress, a.reason);
           if (result.success) {
             await deps.notifier.notifyClose(result);
+            // Sell the withdrawn base token back to SOL (never throws).
+            await consolidateBaseToSol(
+              {
+                chain: deps.chain,
+                swap: deps.swap,
+                notifier: deps.notifier,
+                logger: deps.logger,
+                slippageBps: deps.config.autoSwapSlippageBps,
+                minUsd: deps.config.autoSwapMinUsd,
+              },
+              result.base_mint,
+            );
           }
         } catch (err) {
           deps.logger.error(

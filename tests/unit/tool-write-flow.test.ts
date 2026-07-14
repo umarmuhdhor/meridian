@@ -225,6 +225,33 @@ describe("close_position + claim_fees + swap_token — post-hooks", () => {
     expect(ds[0]?.type).toBe("close");
   });
 
+  it("close success → base token auto-swapped to SOL via post-hook", async () => {
+    const { ctx, notifier, chain } = fullyMemCtx({ walletSol: 5 });
+    const deploy = await chain.deployPosition({
+      pool_address: "poolA",
+      amount_sol: 1,
+      strategy: "bid_ask",
+      bins_below: 40,
+      bins_above: 0,
+    });
+    const [pos] = chain.peekPositions();
+    if (!pos) throw new Error("expected position");
+    chain.setState({ positions: [{ ...pos, base_mint: "MINT_BASE" }] });
+    // Teach the chain to report the withdrawn base token sitting in the wallet.
+    (chain as unknown as { getWalletTokens: () => Promise<unknown> }).getWalletTokens = async () => [
+      { mint: "MINT_BASE", symbol: null, balance: 1000, raw: "1000000000", usd: 50 },
+    ];
+    notifier.clear();
+
+    const r = await executeTool(createRegistry([closePositionTool]), {
+      name: "close_position",
+      args: { position_address: deploy.position_address, reason: "test close" },
+    }, ctx);
+    expect(r.ok).toBe(true);
+    // The consolidation swap fired (base → SOL) as a post-hook side-effect.
+    expect(notifier.recorded.some((e) => e.type === "swap")).toBe(true);
+  });
+
   it("claim success → notifier claim event", async () => {
     const { ctx, notifier, chain } = fullyMemCtx({ walletSol: 5 });
     const deploy = await chain.deployPosition({

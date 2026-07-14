@@ -108,6 +108,11 @@ export const WalletTokenSchema = z.object({
   symbol: z.string().nullable(),
   balance: z.number().nonnegative(),
   usd: z.number().nonnegative().nullable(),
+  /** Raw on-chain amount in base units (integer string, uiAmount × 10^decimals). Needed
+   *  to swap the exact holding — `balance` is uiAmount and would under-fund the swap.
+   *  A string (not number) so large-supply / low-decimal balances keep full precision.
+   *  Optional so existing callers/readers (dashboard wallet page) are unaffected. */
+  raw: z.string().optional(),
 });
 export type WalletToken = z.infer<typeof WalletTokenSchema>;
 
@@ -116,6 +121,10 @@ export const SwapArgsSchema = z.object({
   input_mint: z.string(),
   output_mint: z.string(),
   amount_in: z.number().positive(),
+  /** Optional RAW base-unit integer string. When present, the adapter uses this (via
+   *  BigInt) as the exact swap amount instead of `amount_in`, avoiding number precision
+   *  loss for large-supply tokens. Set by the auto-swap consolidation path. */
+  amount_in_raw: z.string().regex(/^\d+$/).optional(),
   slippage_bps: z.number().int().min(1).max(10_000).default(100),
 });
 export type SwapArgs = z.infer<typeof SwapArgsSchema>;

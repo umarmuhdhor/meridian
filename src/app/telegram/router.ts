@@ -7,6 +7,7 @@ import { runAgentLoop } from "../agent/loop.js";
 import { buildSystemPrompt } from "../../domain/prompt/builder.js";
 import { GENERAL_TOOLS } from "../../domain/prompt/role-tools.js";
 import { runBriefingCycle } from "../briefing/cycle.js";
+import { consolidateBaseToSol } from "../management/consolidate.js";
 
 export interface TelegramRouterDeps {
   ctx: AppContext;
@@ -161,6 +162,17 @@ export async function routeTelegramMessage(
             "info",
             `✅ Closed #${idx} ${target.pair}. tx=${result.tx ?? "(n/a)"}`,
           );
+          await consolidateBaseToSol(
+            {
+              chain: deps.ctx.chain,
+              swap: deps.ctx.swap,
+              notifier: deps.ctx.notifier,
+              logger: deps.ctx.logger,
+              slippageBps: deps.ctx.config.management.autoSwapSlippageBps,
+              minUsd: deps.ctx.config.management.autoSwapMinUsd,
+            },
+            result.base_mint,
+          );
         } else {
           await deps.ctx.notifier.notify(
             "warn",
@@ -204,8 +216,13 @@ export async function routeTelegramMessage(
       for (const p of snap.positions) {
         try {
           const result = await deps.ctx.chain.closePosition(p.position, "telegram /closeall");
-          if (result.success) ok += 1;
-          else fail += 1;
+          if (result.success) {
+            ok += 1;
+            await consolidateBaseToSol(
+              { chain: deps.ctx.chain, swap: deps.ctx.swap, notifier: deps.ctx.notifier, logger: deps.ctx.logger },
+              result.base_mint,
+            );
+          } else fail += 1;
         } catch (err) {
           fail += 1;
           deps.ctx.logger.warn("telegram-router", "closeall item threw", {

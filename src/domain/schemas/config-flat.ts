@@ -37,6 +37,8 @@ export const FlatUserConfigSchema = z
     repeatDeployCooldownHours: z.number().positive().default(12),
     repeatDeployCooldownScope: z.enum(["token", "pool", "pool_and_token"]).default("token"),
     repeatDeployCooldownMinFeeEarnedPct: z.number().nonnegative().default(1.5),
+    autoSwapSlippageBps: z.number().int().min(1).max(10_000).default(300),
+    autoSwapMinUsd: z.number().nonnegative().default(0.5),
 
     // strategy
     strategy: z.enum(["spot", "curve", "bid_ask"]),

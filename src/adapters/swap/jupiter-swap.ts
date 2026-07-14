@@ -192,7 +192,10 @@ export function createJupiterSwapClient(opts: JupiterSwapOptions): SwapClient {
   return {
     async swap(args: SwapArgs): Promise<SwapResult> {
       const slippage = args.slippage_bps ?? defaultSlippageBps;
-      const amountRaw = BigInt(Math.floor(args.amount_in));
+      // Prefer the exact raw integer string when provided (no number precision loss);
+      // fall back to the numeric amount for the normal LLM/dashboard swap path.
+      const amountRaw =
+        args.amount_in_raw != null ? BigInt(args.amount_in_raw) : BigInt(Math.floor(args.amount_in));
       const quoteInputs: QuoteInputs = {
         inputMint: args.input_mint,
         outputMint: args.output_mint,

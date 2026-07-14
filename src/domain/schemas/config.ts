@@ -24,6 +24,11 @@ export const ManagementConfigSchema = z.object({
   repeatDeployCooldownHours: z.number().positive(),
   repeatDeployCooldownScope: z.enum(["token", "pool", "pool_and_token"]),
   repeatDeployCooldownMinFeeEarnedPct: z.number().nonnegative(),
+  /** Slippage (bps) for the auto-swap that consolidates a closed position's base token
+   *  back to SOL. Higher than a normal swap because exited memecoins are often thin. */
+  autoSwapSlippageBps: z.number().int().min(1).max(10_000).default(300),
+  /** Skip consolidating a leftover base balance priced below this USD value (dust). */
+  autoSwapMinUsd: z.number().nonnegative().default(0.5),
 });
 export type ManagementConfig = z.infer<typeof ManagementConfigSchema>;
 

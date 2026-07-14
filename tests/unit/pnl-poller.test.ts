@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import type { Clock } from "../../src/ports/clock.js";
 import { nullLogger } from "../../src/ports/logger.js";
 import type { ChainClient } from "../../src/ports/chain-client.js";
+import type { SwapClient } from "../../src/ports/swap-client.js";
+import type { SwapArgs } from "../../src/domain/schemas/chain.js";
 import type { Notifier } from "../../src/ports/notifier.js";
 import type { PositionRepo } from "../../src/ports/position-repo.js";
 import type { ManagementConfig } from "../../src/domain/schemas/config.js";
@@ -50,6 +52,8 @@ const mgmt: ManagementConfig = {
   repeatDeployCooldownHours: 12,
   repeatDeployCooldownScope: "token",
   repeatDeployCooldownMinFeeEarnedPct: 1.5,
+  autoSwapSlippageBps: 250,
+  autoSwapMinUsd: 0.5,
 };
 
 function makeLive(overrides: Partial<OnChainPosition & { _peakPnlPct: number }> = {}): OnChainPosition {
@@ -206,6 +210,7 @@ describe("createPnlPoller — orchestration", () => {
   function fakeChain(
     snapshot: PositionsSnapshot,
     closeSpy: ReturnType<typeof vi.fn>,
+    walletTokens: { mint: string; symbol: string | null; balance: number; raw?: string; usd: number | null }[] = [],
   ): ChainClient {
     return {
       async getWalletBalance() {
@@ -217,12 +222,34 @@ describe("createPnlPoller — orchestration", () => {
       async getMyPositions() {
         return snapshot;
       },
+      async getWalletTokens() {
+        return walletTokens;
+      },
       async deployPosition() {
         throw new Error("nope");
       },
       closePosition: closeSpy as unknown as ChainClient["closePosition"],
       async claimFees() {
         throw new Error("nope");
+      },
+    };
+  }
+
+  function fakeSwap(): SwapClient & { calls: SwapArgs[] } {
+    const calls: SwapArgs[] = [];
+    return {
+      calls,
+      async swap(args) {
+        calls.push(args);
+        return {
+          success: true,
+          input_mint: args.input_mint,
+          output_mint: args.output_mint,
+          amount_in: args.amount_in,
+          amount_out: args.amount_in,
+          tx: "swap-sig",
+          dry_run: false,
+        };
       },
     };
   }
@@ -297,10 +324,14 @@ describe("createPnlPoller — orchestration", () => {
       dry_run: false,
     }));
     const notifier = fakeNotifier();
+    const swap = fakeSwap();
     const poller = createPnlPoller({
       clock,
       logger: nullLogger,
-      chain: fakeChain(currentSnap, closeSpy),
+      chain: fakeChain(currentSnap, closeSpy, [
+        { mint: "MintA", symbol: null, balance: 1000, raw: "1000000000", usd: 50 },
+      ]),
+      swap,
       notifier,
       scheduler,
       positionRepo: fakePositionRepo({ Pos1: tracked }),
@@ -323,6 +354,16 @@ describe("createPnlPoller — orchestration", () => {
     expect(closeSpy.mock.calls[0]![0]).toBe("Pos1");
     expect(notifier.closes).toHaveLength(1);
     expect(poller.peekPending()).toHaveLength(0);
+
+    // Auto-swap: the withdrawn base (MintA) is consolidated to SOL after the close,
+    // at the exact raw amount and the config-driven slippage (mgmt.autoSwapSlippageBps).
+    expect(swap.calls).toHaveLength(1);
+    expect(swap.calls[0]).toMatchObject({
+      input_mint: "MintA",
+      output_mint: "So11111111111111111111111111111111111111112",
+      amount_in_raw: "1000000000",
+      slippage_bps: 250,
+    });
 
     poller.stop();
   });
@@ -351,6 +392,7 @@ describe("createPnlPoller — orchestration", () => {
       clock,
       logger: nullLogger,
       chain: fakeChain(currentSnap, closeSpy),
+      swap: fakeSwap(),
       notifier,
       scheduler,
       positionRepo: fakePositionRepo({ Pos1: tracked }),
