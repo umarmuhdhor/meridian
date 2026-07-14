@@ -97,6 +97,72 @@ Only after D4 + D5 are green: set `MERIDIAN_CHAIN=meteora` again, keep
 `MERIDIAN_DECIDER=sage`. First few cycles: small `deployAmountSol`. Watch the first live
 delegated deploy end-to-end (decision log + Telegram card come from the bridge post-hooks).
 
+## CONCRETE CUTOVER (discovered 2026-07-14, Cloudflare + CF Access transport)
+
+Recon facts (HK VPS `ubuntu@101.32.216.139`):
+- Containers: `meridian` (daemon, owns netns, bridge on 127.0.0.1:8787, NOT published),
+  `meridian-web` (shares netns), `meridian-cloudflared`, `n8n`. Docker net `meridian_mnet`.
+- CF account `3f85ea8aaf60fe6e93bbe8586ae4bb27`, zone `nafidinara.com`
+  `a22ddedc86f359ec5ea503a492850fb0`.
+- Tunnels: `meridian-vps` `eaf7c027-7af5-4bc2-88b8-1263810a39dc` (ingress: calisto→meridian:3000),
+  `vivobook` `a33a2420-1b00-4c25-afb7-f583a1b28df1` (ssh + 9router→caddy:80).
+- Provided CF API token has **Tunnel:Edit but NOT DNS:Edit / Access:Edit**.
+
+These steps are security/funds-sensitive on a LIVE box — run them yourself (or approve
+outside auto mode). None restart the `meridian` daemon except the final arming.
+
+### 1. Broaden the CF token (you, dashboard)
+Add **Zone.DNS:Edit** + **Access: Apps and Policies:Edit** for `nafidinara.com`.
+
+### 2. HK bridge sidecar (no daemon restart) — exposes 127.0.0.1:8787 to the tunnel net
+```
+docker rm -f meridian-bridge-proxy 2>/dev/null
+docker run -d --name meridian-bridge-proxy --restart unless-stopped \
+  --network container:meridian \
+  alpine/socat tcp-listen:8788,fork,reuseaddr tcp-connect:127.0.0.1:8787
+```
+This is a security-weakening change (bridge leaves loopback) — that's why an agent in
+auto mode is blocked from doing it. Verify:
+```
+TOK=$(docker inspect meridian --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^DASHBOARD_TOKEN=//p')
+docker run --rm --network meridian_mnet curlimages/curl:latest -s -H "Authorization: Bearer $TOK" http://meridian:8788/health
+```
+
+### 3. CF Access + ingress + DNS (needs the broadened token)
+- Access service token (machine auth): create one; put an Access app in front of
+  `mrd-bridge.nafidinara.com` and `sage-api.nafidinara.com` requiring that service token.
+- meridian-vps tunnel ingress (GET current, APPEND before the 404, PUT full):
+  add `{ "hostname": "mrd-bridge.nafidinara.com", "service": "http://meridian:8788" }`
+  (keep the existing calisto rule first).
+- vivobook tunnel ingress: add `sage-api.nafidinara.com` → the Sage api (route via
+  `caddy:80` → host `:8642`, or a socat on vivobook). 
+- DNS: CNAME `mrd-bridge` → `<meridian-vps-tunnel-id>.cfargotunnel.com` (proxied),
+  CNAME `sage-api` → `<vivobook-tunnel-id>.cfargotunnel.com` (proxied).
+
+### 4. Enable Sage api + plugin (vivobook) — the ONE hermes restart (6 agents blip)
+- sage `.env`: `API_SERVER_KEY=…`, `MERIDIAN_BRIDGE_URL=https://mrd-bridge.nafidinara.com`,
+  `MERIDIAN_BRIDGE_TOKEN=<meridian DASHBOARD_TOKEN>`, plus the CF Access service-token
+  header if using Access.
+- sage `config.yaml`: add `api` platform (loopback:8642) + `meridian` to `toolsets`.
+- `cd ~/.hermes/hermes-agent && docker compose restart gateway`
+- Verify reads: Telegram → Sage → "my Meridian positions?" → mrd_get_positions → bridge.
+
+### 5. Arm Meridian (HK) — DISRUPTIVE to the daemon; real money on first live cycle
+Edit `/home/ubuntu/meridian/.env` (or compose environment), add:
+```
+MERIDIAN_DECIDER=sage
+SAGE_BASE_URL=https://sage-api.nafidinara.com
+SAGE_API_KEY=<sage API_SERVER_KEY>
+SAGE_SESSION_KEY=meridian-trading
+SAGE_TIMEOUT_MS=90000
+```
+`docker compose up -d meridian` (recreates the daemon). Watch a cycle: `decider: SAGE …
+fallback armed`. First few live cycles: keep `deployAmountSol` small.
+
+NOTE: the live box runs `MERIDIAN_CHAIN=meteora` (real). There is no free dryrun on it;
+the dryrun gate was validated locally (409 tests + the E2E integration test). On the live
+box, the safety net is the OpenRouter fallback + small deploy size for the first cycles.
+
 ## Rollback
 
 - Meridian: unset `MERIDIAN_DECIDER` (or set `=loop`) + redeploy → back to the local loop.
