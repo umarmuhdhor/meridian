@@ -61,6 +61,8 @@ export function createSageDeciderHttp(opts: SageDeciderHttpOptions): SageDecider
       const timer = setTimeout(() => controller.abort(), input.timeoutMs);
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
+        // Explicit UA — Cloudflare blocks default programmatic UAs (403 / error 1010).
+        "User-Agent": "meridian-daemon/1.0",
         Authorization: `Bearer ${opts.apiKey}`,
         "X-Hermes-Session-Key": input.sessionKey,
       };

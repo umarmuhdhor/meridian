@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugins.meridian.client import BridgeError, bridge_configured, get, post_tool
+from .client import BridgeError, bridge_configured, get, post_tool
 from tools.registry import tool_error, tool_result
 
 _STR = {"type": "string"}

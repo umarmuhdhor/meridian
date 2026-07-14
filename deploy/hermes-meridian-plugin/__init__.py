@@ -11,7 +11,7 @@ Mirrors the plugins/spotify layout (kind: backend, register(ctx)).
 
 from __future__ import annotations
 
-from plugins.meridian.tools import (
+from .tools import (
     MRD_CLAIM_SCHEMA,
     MRD_CLOSE_SCHEMA,
     MRD_DEPLOY_SCHEMA,

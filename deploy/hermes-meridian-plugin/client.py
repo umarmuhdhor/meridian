@@ -43,6 +43,9 @@ def _request(method: str, path: str, body: Optional[dict] = None, timeout: float
     url = f"{base}{path}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
+    # Cloudflare blocks the default "Python-urllib" User-Agent (403 / error 1010),
+    # so set an explicit one. The endpoint is auth-gated by CF Access + Bearer.
+    req.add_header("User-Agent", "meridian-sage-plugin/0.1")
     req.add_header("Authorization", f"Bearer {_token()}")
     # Cloudflare Access service-token auth (when the bridge is fronted by CF Access).
     cf_id = os.getenv("MERIDIAN_BRIDGE_CF_CLIENT_ID")
