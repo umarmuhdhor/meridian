@@ -243,10 +243,33 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     // cycle_id is the deploy idempotency key, shared with the fallback so a
     // delegate→timeout→fallback sequence can't double-deploy (bridge rejects the dup).
     const cycleId = `screen-${ctx.clock.now().toISOString().slice(0, 16)}-${Math.random().toString(36).slice(2, 8)}`;
+    // Sage-tailored prompt. Sage's plugin exposes `mrd_`-prefixed tools, NOT Meridian's
+    // internal SCREENER toolset — sending Meridian's full SCREENER systemPrompt makes Sage
+    // flail (it calls the heavy mrd_get_candidates → CF 502 → timeout). Instead give it the
+    // ranked candidates directly and one job: deploy the chosen one via mrd_deploy_position.
+    const sageSystemPrompt = [
+      "You are Meridian's DLMM screening decider. You are given PRE-FILTERED, RANKED pool",
+      "candidates — do NOT discover, verify, or re-rank them.",
+      "Pick the single best candidate to deploy into, or none.",
+      "To deploy, call mrd_deploy_position EXACTLY ONCE with: pool_address (from the chosen",
+      "candidate), amount_sol, strategy, bins_below (all given below), bins_above=0, and",
+      "cycle_id (verbatim from the task).",
+      "Do NOT call mrd_get_candidates, mrd_get_positions, mrd_get_wallet, or any other tool —",
+      "everything you need is in this message.",
+      "If none qualify, reply exactly: NO DEPLOY: <reason>.",
+    ].join("\n");
+    const sageGoal = [
+      "SCREENING CYCLE — choose one candidate and call mrd_deploy_position, or NO DEPLOY.",
+      "",
+      "CANDIDATES:",
+      formatCandidatesBlock(picked),
+      "",
+      `amount_sol: ${ctx.config.management.deployAmountSol}. strategy: ${ctx.config.strategy.strategy}. bins_below: ${ctx.config.strategy.defaultBinsBelow} (floor ${ctx.config.strategy.minBinsBelow}). bins_above: 0.`,
+    ].join("\n");
     try {
       const result = await deps.sage.decide({
-        systemPrompt,
-        goal,
+        systemPrompt: sageSystemPrompt,
+        goal: sageGoal,
         sessionKey: deps.sageSessionKey ?? "meridian-trading",
         cycleId,
         timeoutMs: deps.sageTimeoutMs ?? 90_000,
