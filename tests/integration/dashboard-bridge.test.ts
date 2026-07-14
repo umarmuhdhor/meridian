@@ -143,6 +143,26 @@ describe("dashboard bridge", () => {
     expect(typeof body.result.id).toBe("string");
   });
 
+  it("POST /tool rejects a duplicate cycle_id after a committed write", async () => {
+    const cycleId = "test-cycle-" + PORT;
+    // first write with a cycle_id succeeds and commits the key
+    const r1 = await post(
+      "/tool",
+      { name: "add_lesson", args: { rule: "cycle guard" }, confirm: true, cycle_id: cycleId },
+      auth,
+    );
+    expect(r1.status).toBe(200);
+    expect(((await r1.json()) as { ok: boolean }).ok).toBe(true);
+    // second write reusing the same cycle_id is rejected before executing
+    const r2 = await post(
+      "/tool",
+      { name: "add_lesson", args: { rule: "cycle guard again" }, confirm: true, cycle_id: cycleId },
+      auth,
+    );
+    expect(r2.status).toBe(409);
+    expect(((await r2.json()) as { error: string }).error).toMatch(/duplicate/);
+  });
+
   it("POST /tool denies tools outside the allowlist (self_update)", async () => {
     const r = await post("/tool", { name: "self_update", args: {} }, auth);
     expect(r.status).toBe(403);
