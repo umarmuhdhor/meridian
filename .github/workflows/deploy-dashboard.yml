@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2 # need the previous commit to diff changed paths
+          fetch-depth: 0 # full history — github.event.before can be >2 commits back (merges)
 
       - uses: actions/setup-node@v4
         with:
