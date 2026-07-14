@@ -66,6 +66,20 @@ services:
     depends_on:
       - meridian
 
+  # Sidecar for the Sage↔Meridian Path-2 transport: exposes the daemon's
+  # loopback-only bridge (127.0.0.1:8787) on :8788 inside the meridian netns so
+  # the cloudflared tunnel (mrd-bridge.nafidinara.com) can reach it. Shares
+  # meridian's netns via compose so `up -d --force-recreate` re-attaches it on
+  # every deploy (a standalone `--network container:meridian` orphans on recreate).
+  bridge-proxy:
+    image: alpine/socat
+    container_name: meridian-bridge-proxy
+    restart: unless-stopped
+    network_mode: "service:meridian"
+    depends_on:
+      - meridian
+    command: tcp-listen:8788,fork,reuseaddr tcp-connect:127.0.0.1:8787
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: meridian-cloudflared
