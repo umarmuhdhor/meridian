@@ -1,15 +1,20 @@
 name: deploy-dashboard
 
 # Auto-deploy on every push to `dashboard`:
-#   test (daemon + web) → build image → push GHCR → SSH VPS → deploy.sh
-# A failed test/build never reaches the server; an unhealthy release auto-rolls
+#   test-build (ubuntu-latest) → deploy (ubuntu-latest via CF Access SSH to vivobook)
+# A failed test/build never reaches the box; an unhealthy release auto-rolls
 # back on the box. The daemon restarts only when non-web code changed.
+#
+# CF Access SSH: vivobook has zero open inbound ports. `ssh vivobook-public`
+# tunnels through Cloudflare Access via `cloudflared access ssh --hostname %h`,
+# authenticated with a service token whose ID + secret live in GH secrets
+# (CF_ACCESS_CLIENT_ID, CF_ACCESS_CLIENT_SECRET). Deploy keypair private half
+# lives in VIVOBOOK_SSH_KEY; pub half is in vivobook's ~/.ssh/authorized_keys.
 on:
   push:
     branches: [dashboard]
 
-# Serialize deploys so two pushes never race the single VPS. Do NOT cancel a
-# deploy already talking to the box — queue behind it.
+# Serialize deploys so two pushes never race the box.
 concurrency:
   group: deploy-dashboard
   cancel-in-progress: false
@@ -19,12 +24,10 @@ permissions:
   packages: write
 
 jobs:
-  ship:
+  test-build:
     runs-on: ubuntu-latest
-    # Deploy steps run only once the VPS secrets exist. Until then the run is
-    # still green (tests + build + GHCR push) and the deploy is skipped.
-    env:
-      HAS_DEPLOY: ${{ secrets.VPS_HOST != '' }}
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,8 +55,6 @@ jobs:
         run: npm run build
 
       # ── decide restart scope from changed paths ──
-      # web-only  → nothing outside dashboard/web/ changed → hot-swap web
-      # full      → daemon/core/infra changed → recreate daemon too
       - name: Determine deploy scope
         id: scope
         env:
@@ -65,8 +66,6 @@ jobs:
           fi
           CHANGED=$(git diff --name-only "$BEFORE" "$SHA")
           echo "changed files:"; echo "$CHANGED"
-          # Skip build+deploy when nothing that affects the runtime image changed
-          # (docs *.md and workflow files under .github/ take effect without a deploy).
           if [ -z "$CHANGED" ] || ! echo "$CHANGED" | grep -qvE '(\.md$|^\.github/)'; then
             echo "scope=none" >> "$GITHUB_OUTPUT"; echo "→ non-runtime change, skip build+deploy"
           elif echo "$CHANGED" | grep -qvE '^dashboard/web/'; then
@@ -76,8 +75,6 @@ jobs:
           fi
 
       # ── build + push the (now tested) image (skipped on docs-only pushes) ──
-      # setup-buildx gives us the docker-container driver, required for the
-      # type=gha build cache below (the default docker driver can't export it).
       - if: steps.scope.outputs.scope != 'none'
         uses: docker/setup-buildx-action@v3
       - if: steps.scope.outputs.scope != 'none'
@@ -97,31 +94,63 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ── ship infra (compose + deploy script) so the box stays in sync ──
-      - name: Copy compose + deploy script to VPS
-        if: env.HAS_DEPLOY == 'true' && steps.scope.outputs.scope != 'none'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          source: "docker-compose.yml,deploy/deploy.sh"
-          target: "meridian"
+  deploy:
+    needs: test-build
+    if: |
+      needs.test-build.outputs.scope != 'none' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/dashboard'
+    runs-on: ubuntu-latest
+    # cloudflared reads these from env for service-token auth on `access ssh`.
+    env:
+      CF_ACCESS_CLIENT_ID:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      SHA:   ${{ github.sha }}
+      SCOPE: ${{ needs.test-build.outputs.scope }}
+    steps:
+      - uses: actions/checkout@v4
 
-      # ── run the deploy (pull → scoped cutover → health-check → rollback) ──
-      - name: Deploy
-        if: env.HAS_DEPLOY == 'true' && steps.scope.outputs.scope != 'none'
-        uses: appleboy/ssh-action@v1.2.0
-        env:
-          SHA: ${{ github.sha }}
-          SCOPE: ${{ steps.scope.outputs.scope }}
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          command_timeout: 5m
-          envs: SHA,SCOPE
-          script: |
-            cd ~/meridian
-            chmod +x deploy/deploy.sh
-            ./deploy/deploy.sh "$SHA" "$SCOPE"
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          sudo install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Configure SSH via CF Access ProxyCommand
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # Deploy key (private half; pub half is in vivobook ~/.ssh/authorized_keys)
+          printf '%s\n' "${{ secrets.VIVOBOOK_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'SSHCFG'
+          Host vivobook
+            HostName ssh.nafidinara.com
+            User nafidinara
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          SSHCFG
+          chmod 600 ~/.ssh/config
+
+      - name: SSH connectivity smoke test
+        run: ssh -o BatchMode=yes vivobook 'echo SSH_OK from $(hostname) as $(whoami); docker version --format "docker {{.Server.Version}}"'
+
+      - name: Sync infra to runtime dir on vivobook
+        run: |
+          set -euo pipefail
+          # deploy.sh reads $HOME/meridian by default; ensure the dir exists.
+          ssh vivobook 'mkdir -p ~/meridian/deploy'
+          scp -o BatchMode=yes docker-compose.yml vivobook:~/meridian/docker-compose.yml
+          scp -o BatchMode=yes deploy/deploy.sh   vivobook:~/meridian/deploy/deploy.sh
+          ssh vivobook 'chmod +x ~/meridian/deploy/deploy.sh'
+
+      - name: Deploy (scoped cutover → health-check → auto-rollback)
+        run: |
+          ssh vivobook "cd ~/meridian && ./deploy/deploy.sh '$SHA' '$SCOPE'"

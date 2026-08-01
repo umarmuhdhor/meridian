@@ -2,7 +2,8 @@
 
 > **Canonical source of truth for how Meridian is deployed and operated in
 > production.** If anything here disagrees with an older doc (`PRD-deployment.md`,
-> `PLAN-deployment.md`), this file wins. Last major update: 2026-07-12.
+> `PLAN-deployment.md`), this file wins. Last major update: 2026-08-01
+> (Tencent HK → vivobook migration; co-located with Sage).
 
 ---
 
@@ -12,40 +13,55 @@
 |---|---|
 | **Live code** | TypeScript rewrite under `src/` (entry `src/entrypoints/daemon.ts` → `dist/entrypoints/daemon.js`). The legacy JS layout in `CLAUDE.md` is retired. |
 | **Branch** | `dashboard` (this is the deployed branch, not `main`) |
-| **Host** | Tencent Cloud VPS, **Hong Kong**, `ubuntu@101.32.216.139` (Ubuntu 24.04) |
+| **Host** | vivobook home server (co-located with Sage), SSH `ssh vivobook-public`, user `nafidinara`, Ubuntu |
 | **App dir** | `~/meridian` · state volume `~/meridian-data` → `/opt/data` |
-| **Runtime** | Docker: `meridian`, `meridian-web`, `meridian-cloudflared`, **`meridian-bridge-proxy`** (+ `n8n`), `sudo docker compose` |
+| **Runtime** | Docker: `meridian`, `meridian-web` (2 containers). Reverse proxy = vivobook's shared `caddy` + `cloudflared` (already running for other services). `docker compose` (no sudo needed; user in `docker` group). |
 | **Trading** | LIVE — real wallet, `DRY_RUN=false`, `MERIDIAN_WRITE_UNSAFE=true` |
-| **Screening decider** | **Sage** (Hermes agent on vivobook), `MERIDIAN_DECIDER=sage` — local LLM loop is the fallback. See [`SAGE-MERIDIAN-ROLLOUT.md`](SAGE-MERIDIAN-ROLLOUT.md). |
+| **Screening decider** | **Sage** (Hermes agent on same host), `MERIDIAN_DECIDER=sage`, intra-docker delegation via `host.docker.internal:8643` → `sage-api-proxy` (socat) → `hermes:8642`. Local LLM loop is the fallback. |
 | **Telegram** | "Calisto" = notify-only (`MERIDIAN_TELEGRAM_INBOUND=false`, cards only); **Sage** (@SageHermesAnd_bot) is the conversational brain in the group. |
 | **Dashboard** | https://calisto.nafidinara.com (Cloudflare Access + 6-digit PIN) |
-| **Deploy** | push to `dashboard` → GitHub Actions → GHCR → VPS auto-pulls |
+| **Deploy** | push to `dashboard` → GitHub Actions (`ubuntu-latest`) → GHCR + `scp`/`ssh` to vivobook over Cloudflare Access SSH → `deploy.sh` |
 | **Registry** | `ghcr.io/umarmuhdhor/meridian` (private) |
-| **Kill switch** | `cd ~/meridian && sudo docker compose stop` |
+| **Kill switch** | `cd ~/meridian && docker compose stop` |
 
 ---
 
 ## 1. Architecture
 
 ```
-                         ┌───────────────── GitHub (umarmuhdhor/meridian) ─────────────────┐
-   git push dashboard ──►│  Actions: test → build → push image → SSH deploy                 │
-                         └───────────────────────────────┬─────────────────────────────────┘
-                                                         │ ghcr.io/…:<sha>
-                                                         ▼
-   Browser ── https://calisto.nafidinara.com        Tencent HK VPS (101.32.216.139)
-      │                                              ~/meridian (docker compose)
-      ▼                                              ┌──────────────────────────────────────┐
-   Cloudflare edge ── TLS + Access (email OTP) ──────┤ cloudflared  → http://meridian:3000   │
-      │ (GATE 1: identity)                           │                                        │
-      ▼                                              │ meridian (daemon)  ── owns netns +     │
-   cloudflared tunnel (outbound-only, no open ports) │   bridge 127.0.0.1:8787 + state vol    │
-                                                     │        ▲ network_mode: service         │
-                                                     │ meridian-web (Next.js :3000)           │
-                                                     │   GATE 2: PIN middleware               │
-                                                     └──────────────────────────────────────┘
-                                                              │
-                                                       daemon → Solana wallet (LIVE)
+                        ┌──── GitHub (umarmuhdhor/meridian) ────┐
+  git push dashboard ──►│ Actions (ubuntu-latest):              │
+                        │   test-build → push image             │
+                        │   deploy: cloudflared access ssh      │
+                        │     → scp/ssh vivobook → deploy.sh    │
+                        └──────────────┬────────────────────────┘
+                                       │ ghcr.io/…:<sha>
+                                       ▼
+  Browser ── https://calisto.nafidinara.com      vivobook home server (ssh vivobook-public)
+     │                                            ~/meridian (docker compose)
+     ▼                                            ┌──────────────────────────────────────────┐
+  Cloudflare edge ── TLS + Access (email OTP) ───►│ (existing vivobook cloudflared) → caddy  │
+     │ (GATE 1: identity)                         │        │                                  │
+     ▼                                            │        ▼                                  │
+  cloudflared tunnel (outbound-only)              │  caddy (Host→backend routing on `web` net)│
+                                                  │        │                                  │
+                                                  │        ▼                                  │
+                                                  │  meridian (daemon)  ── netns + bridge     │
+                                                  │    127.0.0.1:8787 + state vol             │
+                                                  │        ▲ network_mode: service            │
+                                                  │  meridian-web (Next.js :3000)             │
+                                                  │    GATE 2: PIN middleware                 │
+                                                  └──────────┬───────────────────────────────┘
+                                                             │
+                                          daemon → Solana wallet (LIVE)
+                                             │
+                                             │ Sage delegation (intra-host)
+                                             ▼
+                                    host.docker.internal:8643
+                                             │ (docker host-gateway)
+                                             ▼
+                                    sage-api-proxy (socat) → hermes:8642
+                                    (OpenAI-compatible API, session-key auth)
 ```
 
 **Two containers, one image.** Both run `ghcr.io/umarmuhdhor/meridian:dashboard`,
@@ -53,32 +69,42 @@ selecting one PM2 app via `--only`:
 
 - **`meridian`** — the trading daemon. Owns the Docker network namespace, the
   control bridge on `127.0.0.1:8787` (localhost-only, never exposed), and the
-  state volume. Restarts only when daemon/core code changes.
+  state volume. Joins the `web` external network so vivobook's Caddy reaches it
+  by container DNS (`meridian:3000`). `extra_hosts: host.docker.internal:host-gateway`
+  lets it hit Sage's socat proxy on the host. Restarts only when daemon/core code changes.
 - **`meridian-web`** — the Next.js dashboard. Uses `network_mode: "service:meridian"`
   to share the daemon's namespace so it can reach the localhost bridge and listen
   on `:3000` there. Redeploys with **zero daemon interruption**.
-- **`cloudflared`** — Cloudflare Tunnel connector → `http://meridian:3000` (calisto),
-  and `mrd-bridge.nafidinara.com → http://meridian:8788` (the bridge, for Sage).
-- **`meridian-bridge-proxy`** — socat `8788→127.0.0.1:8787`, `network_mode: service:meridian`
-  so it re-attaches on every `--force-recreate`. Exposes the loopback bridge to the tunnel
-  so **Sage** (Path 2 decider, on vivobook) can read/deploy via CF Access. Details:
-  [`SAGE-MERIDIAN-ROLLOUT.md`](SAGE-MERIDIAN-ROLLOUT.md).
+- **cloudflared + Caddy** live on vivobook already, serving other services too.
+  This repo doesn't manage them. A Caddyfile entry + CF Tunnel public hostname
+  point `calisto.nafidinara.com` → `meridian:3000`. See §4 for setup.
+- **sage-api-proxy + hermes** live in the Sage stack (`~/.hermes/hermes-agent/`).
+  This repo doesn't manage them either. Meridian only consumes the socat endpoint
+  at `host.docker.internal:8643`.
 
-Why split: a dashboard change should not restart a live trading daemon.
+Why split meridian ↔ meridian-web: a dashboard change should not restart a live
+trading daemon.
+
+**What migrated away (deleted in the vivobook cutover):**
+- `meridian-bridge-proxy` sidecar (socat) — no longer needed; Meridian reaches
+  Sage directly intra-host, not the other way around.
+- `mrd-bridge.nafidinara.com` Cloudflare Tunnel route — same reason.
+- `sage-api.nafidinara.com` — Sage's external CF-tunneled endpoint; was only
+  used by Tencent-Meridian; now intra-docker.
+- Per-request `SAGE_CF_ACCESS_CLIENT_ID` / `_SECRET` headers — intra-host, no CF Access.
+- Repo `cloudflared` container — vivobook has its own for all services.
 
 ---
 
 ## 2. Access
 
-- **SSH:** `ssh ubuntu@101.32.216.139` (passwordless sudo; `ubuntu` is in the
-  `docker` group but a re-login is needed to drop `sudo`, so scripts use `sudo docker`).
+- **SSH:** `ssh vivobook-public` (user `nafidinara`, in `docker` group — no sudo needed for `docker` commands).
 - **Dashboard (public):** https://calisto.nafidinara.com → Cloudflare Access
   (email one-time PIN) → 6-digit app PIN.
-- **Dashboard (admin, no CF):** SSH tunnel — `ssh -L 3000:127.0.0.1:3000 ubuntu@101.32.216.139`
+- **Dashboard (admin, no CF):** SSH tunnel — `ssh -L 3000:127.0.0.1:3000 vivobook-public`
   then http://localhost:3000 (still PIN-gated).
-- **Fallback host:** the original **vivobook** home server (`100.100.154.123`,
-  Tailscale-only, flaky Wi-Fi) is retired as the target. Its Caddy+Tunnel compose
-  variant is kept at `deploy/docker-compose.vivobook.yml` for reference.
+- **Historical:** Tencent HK VPS (`101.32.216.139`) was decommissioned during
+  the 2026-08-01 migration. Runbook + rollback: [`MIGRATION-vivobook-runbook.md`](MIGRATION-vivobook-runbook.md).
 
 ---
 
@@ -88,15 +114,26 @@ Why split: a dashboard change should not restart a live trading daemon.
 
 ```
 push → .github/workflows/deploy-dashboard.yml
-  1. Daemon tests   (npm ci + npm test = typecheck + vitest)      red → STOP
-  2. Web tests      (dashboard/web: npm ci + npm test + build)    red → STOP
-  3. Scope          docs-only → skip deploy;  web/** only → web-only;  else → full
-  4. Build + push   ghcr.io/…:<sha> + :dashboard   (buildx + gha cache)
-  5. scp            docker-compose.yml + deploy/deploy.sh → VPS
-  6. SSH deploy     deploy/deploy.sh <sha> <scope>
+  test-build job (ubuntu-latest):
+    1. Daemon tests (npm ci + npm test = typecheck + vitest)         red → STOP
+    2. Web tests    (dashboard/web: npm ci + npm test + build)       red → STOP
+    3. Scope decision  docs-only → skip;  web/** only → web-only;  else → full
+    4. Build + push    ghcr.io/…:<sha> + :dashboard  (buildx + gha cache)
+  deploy job (self-hosted, vivobook)  — guarded: push+dashboard only:
+    5. Checkout on runner
+    6. cp docker-compose.yml + deploy/deploy.sh → ~/meridian/
+    7. cd ~/meridian && ./deploy/deploy.sh <sha> <scope>
 ```
 
-**`deploy/deploy.sh` on the VPS:**
+The deploy job runs on `ubuntu-latest` (GitHub-hosted). Vivobook has zero
+open inbound ports — the runner reaches it through **Cloudflare Access SSH**:
+`cloudflared access ssh --hostname ssh.nafidinara.com` authenticated with a
+service token (`CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET` GH secrets),
+tunneled to the vivobook's sshd, deploy keypair (`VIVOBOOK_SSH_KEY`) does the
+final auth. Deploy is `push:[dashboard]` only (an `if:` guard prevents
+accidental `pull_request` invocation from exposing secrets to fork PRs).
+
+**`deploy/deploy.sh` on the box:**
 ```
 tag :dashboard → :previous          (rollback point)
 pull :<sha> → tag :<sha> → :dashboard
@@ -117,9 +154,9 @@ health-check ≤ 60s:
 
 ### Manual deploy (bypass CI)
 ```bash
-ssh ubuntu@101.32.216.139
+ssh vivobook-public
 cd ~/meridian
-sudo docker login ghcr.io -u umarmuhdhor          # if not already
+docker login ghcr.io -u umarmuhdhor               # if not already
 ./deploy/deploy.sh <sha> full                     # or web-only
 # dry-run first: ./deploy/deploy.sh <sha> full --dry-run
 ```
@@ -128,23 +165,37 @@ sudo docker login ghcr.io -u umarmuhdhor          # if not already
 
 ## 4. First-time setup (already done — here for rebuilds / new maintainers)
 
-**GitHub repo secrets** (`umarmuhdhor/meridian` → Settings → Secrets → Actions):
-| Secret | Value |
-|---|---|
-| `VPS_HOST` | `101.32.216.139` |
-| `VPS_USER` | `ubuntu` |
-| `VPS_SSH_KEY` | private key of a deploy keypair whose public key is in the VPS `~/.ssh/authorized_keys` |
-
-GHCR push uses the built-in `GITHUB_TOKEN` (no secret needed).
-
-**On the VPS** (one-time): let it pull the private image:
+**Deploy keypair** (on your Mac):
 ```bash
-echo "<GITHUB_PAT_with_read:packages>" | sudo docker login ghcr.io -u umarmuhdhor --password-stdin
+ssh-keygen -t ed25519 -f ~/.ssh/meridian-gh-deploy -N "" -C "meridian-gh-actions"
+ssh-copy-id -i ~/.ssh/meridian-gh-deploy.pub vivobook-public
 ```
 
-**Cloudflare** (dashboard exposure):
-- Zero Trust → Networks → Tunnels → `meridian-vps` → Public Hostname
-  `calisto.nafidinara.com` → `http://meridian:3000`.
+**CF Access service token** (Zero Trust → Access → Service Auth → Service Tokens):
+1. Create token `meridian-github-actions`, save Client ID + Secret (secret shown once).
+2. Attach to the Access application protecting `ssh.nafidinara.com`: add a
+   policy with Action=`Service Auth`, Include=Service Token=`meridian-github-actions`.
+
+**GitHub repo secrets** (Settings → Secrets → Actions):
+| Secret | Value |
+|---|---|
+| `CF_ACCESS_CLIENT_ID` | from the service token above (ends in `.access`) |
+| `CF_ACCESS_CLIENT_SECRET` | from the service token above |
+| `VIVOBOOK_SSH_KEY` | contents of `~/.ssh/meridian-gh-deploy` (the private half) |
+
+GHCR push uses `GITHUB_TOKEN` (built-in, no secret needed).
+
+**On the vivobook (one-time)** — GHCR pull auth:
+```bash
+echo "<GITHUB_PAT_with_read:packages>" | docker login ghcr.io -u umarmuhdhor --password-stdin
+```
+
+**Cloudflare** (dashboard exposure — reuses vivobook's existing connector):
+- Zero Trust → Networks → Tunnels → `<vivobook connector>` → Public Hostname
+  `calisto.nafidinara.com` → `http://caddy:80` (or the Caddy service on
+  vivobook's `web` network).
+- Add Caddyfile entry on vivobook (outside this repo):
+  `calisto.nafidinara.com { reverse_proxy meridian:3000 }`.
 - Zero Trust → Access → Applications → `Meridian` (domain `calisto.nafidinara.com`),
   policy Allow → Emails (your address + teammates).
 - Zero Trust → Integrations → Identity providers → **One-time PIN** enabled;
@@ -163,11 +214,10 @@ echo "<GITHUB_PAT_with_read:packages>" | sudo docker login ghcr.io -u umarmuhdho
 | `DASHBOARD_TOKEN` / `BRIDGE_TOKEN` | same value; the daemon↔web bridge token. |
 | `MERIDIAN_DASHBOARD_PIN_HASH` | `salt:scryptHash` of the dashboard PIN (see §7). |
 | `MERIDIAN_SESSION_SECRET` | 32-byte hex, signs the dashboard session cookie. |
-| `CLOUDFLARE_TUNNEL_TOKEN` | cloudflared connector token. |
 | `DRY_RUN` / `MERIDIAN_WRITE_UNSAFE` | live gates: `false` / `true`. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Calisto bot + group. |
 | `MERIDIAN_TELEGRAM_INBOUND` | `false` → Calisto notify-only (no LLM replies; Sage is the brain). |
-| `MERIDIAN_DECIDER` + `SAGE_BASE_URL` / `SAGE_API_KEY` / `SAGE_SESSION_KEY` / `SAGE_TIMEOUT_MS` / `SAGE_CF_ACCESS_CLIENT_ID` / `SAGE_CF_ACCESS_CLIENT_SECRET` | Path 2 Sage delegation — full details in [`SAGE-MERIDIAN-ROLLOUT.md`](SAGE-MERIDIAN-ROLLOUT.md). |
+| `MERIDIAN_DECIDER=sage` + `SAGE_BASE_URL=http://host.docker.internal:8643` + `SAGE_API_KEY` / `SAGE_SESSION_KEY=meridian-trading` / `SAGE_TIMEOUT_MS=90000` | Path 2 Sage delegation, now intra-host. `SAGE_CF_ACCESS_*` no longer used (removed at migration). |
 | `HELIUS_API_KEY` | **unused in the TS rewrite** (leftover); safe to leave blank. |
 
 Adapter selection lives in `docker-compose.yml` env, not `.env`:
@@ -224,15 +274,15 @@ The PIN is **shared** across all Access-allowed users. Cloudflare's Access log
 ## 8. Runbook
 
 ```bash
-ssh ubuntu@101.32.216.139 && cd ~/meridian
-sudo docker compose ps                          # container status
-sudo docker compose logs -f meridian            # daemon logs
-sudo docker compose logs -f meridian-web        # dashboard logs
-sudo docker exec meridian pm2 list              # process status
-sudo docker compose restart meridian-web        # bounce web only
-sudo docker compose up -d --force-recreate meridian   # reload daemon (config change)
-sudo docker compose stop                        # KILL SWITCH (positions stay open on-chain)
-sudo docker compose up -d                       # bring everything back
+ssh vivobook-public && cd ~/meridian
+docker compose ps                          # container status
+docker compose logs -f meridian            # daemon logs
+docker compose logs -f meridian-web        # dashboard logs
+docker exec meridian pm2 list              # process status
+docker compose restart meridian-web        # bounce web only
+docker compose up -d --force-recreate meridian   # reload daemon (config change)
+docker compose stop                        # KILL SWITCH (positions stay open on-chain)
+docker compose up -d                       # bring everything back
 ```
 Health probe (what deploy.sh checks): daemon container up + PM2 online + web
 `/login` returns 200. Public reachability: `curl -sI https://calisto.nafidinara.com`
@@ -255,7 +305,8 @@ should be `302` (redirect into Access).
 | Browser shows red "Dangerous" | Chrome Enhanced Safe Browsing false positive on a new domain + login form (not on Google's blocklist — transparency report shows "no available data"). Standard Protection users don't see it. |
 | Deploy didn't recreate the container | `docker compose up` skips recreate on a repointed tag — deploy.sh uses `--force-recreate`. |
 | `MERIDIAN_IMAGE`/`MERIDIAN_REG` override ignored | `sudo docker compose` strips env without `-E`. Only relevant for local-registry testing. |
-| Screening always logs `sage delegation failed, falling back` | Sage endpoint down/slow, or `mrd-bridge` unreachable (bridge-proxy orphaned after a recreate — it's a compose service now, `up -d --force-recreate` fixes it), or CF 403/1010 (missing/blocked UA). Trading continues on the local loop. Full Path 2 gotchas: [`SAGE-MERIDIAN-ROLLOUT.md`](SAGE-MERIDIAN-ROLLOUT.md). |
+| Screening always logs `sage delegation failed, falling back` | `hermes` container down or `sage-api-proxy` (socat) not listening. Check `docker ps \| grep -E 'hermes\|sage-api-proxy'` — both should be Up. `curl -sSf http://127.0.0.1:8643/v1/models -H "Authorization: Bearer $SAGE_API_KEY"` on the host verifies socat→hermes. First screening cycle after a host reboot may briefly show this while hermes finishes booting — expected. Trading continues on the local loop meanwhile. |
+| `SAGE_BASE_URL` connection refused inside Meridian container | `extra_hosts: host.docker.internal:host-gateway` missing (needs Docker Engine ≥20.10) or hermes/socat not on the host. `docker exec meridian getent hosts host.docker.internal` should resolve to the docker bridge gateway IP. |
 | Sage silent in Telegram group / Calisto still replying | Sage: check `allowed_chats` + bot privacy (BotFather `/setprivacy`). Calisto: ensure `MERIDIAN_TELEGRAM_INBOUND=false`. |
 
 ---
@@ -265,8 +316,8 @@ should be `302` (redirect into Access).
 - **Automatic:** deploy.sh health-checks every release and retags `:previous` →
   `:dashboard` + recreates (same scope) if unhealthy. A bad push never leaves
   trading down.
-- **Manual rollback:** `sudo docker tag ghcr.io/umarmuhdhor/meridian:previous
-  ghcr.io/umarmuhdhor/meridian:dashboard && sudo docker compose up -d --force-recreate`.
+- **Manual rollback:** `docker tag ghcr.io/umarmuhdhor/meridian:previous
+  ghcr.io/umarmuhdhor/meridian:dashboard && docker compose up -d --force-recreate`.
 - **State is safe across restarts:** all JSON state persists on `~/meridian-data`
   (`/opt/data` volume); the daemon reconciles open positions on boot.
 - **Disarm without stopping:** set `MERIDIAN_WRITE_UNSAFE=false` in `.env` +
@@ -278,12 +329,12 @@ should be `302` (redirect into Access).
 
 | Path | What |
 |---|---|
-| `.github/workflows/deploy-dashboard.yml` | the CI/CD pipeline |
-| `deploy/deploy.sh` | on-VPS pull → cutover → health-check → rollback |
-| `docker-compose.yml` | the production stack: meridian, meridian-web, cloudflared, **bridge-proxy** |
-| `deploy/docker-compose.vivobook.yml` | Caddy + CF-Tunnel variant (retired host) |
-| `deploy/SAGE-MERIDIAN-ROLLOUT.md` | **Path 2 (Sage decider) — live architecture & ops** |
-| `deploy/cf-setup-path2.sh` | idempotent Cloudflare setup (DNS + Access) for the Sage transport |
+| `.github/workflows/deploy-dashboard.yml` | the CI/CD pipeline (both jobs on `ubuntu-latest`; deploy job SSHes to vivobook via Cloudflare Access) |
+| `deploy/deploy.sh` | on-box pull → cutover → health-check → rollback (unchanged from Tencent era; runs on vivobook via SCP+SSH from the deploy job) |
+| `docker-compose.yml` | production stack: meridian, meridian-web (2 containers). Reverse-proxy = vivobook's shared caddy + cloudflared. |
+| `deploy/MIGRATION-vivobook-runbook.md` | ordered runbook for the 2026-08-01 Tencent→vivobook migration (rehearsal, cutover, decommission, rollback) |
+| `deploy/SAGE-MERIDIAN-ROLLOUT.md` | **Historical** — Path 2 (Sage decider) via CF Tunnel; superseded by intra-host path in this migration. Kept for git-blame context. |
+| `deploy/cf-setup-path2.sh` | **Historical** — CF setup for the Tencent-era Sage transport. Not needed on vivobook. |
 | `deploy/hermes-meridian-plugin/` | the Hermes `meridian` plugin (source of truth; installed on vivobook Sage profile) |
 | `Dockerfile` | node:22 image; `postinstall` runs `patch-anchor.js` |
 | `ecosystem.config.cjs` | PM2 apps `meridian` + `meridian-web` (selected via `--only`) |
