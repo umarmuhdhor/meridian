@@ -43,25 +43,42 @@ ssh-copy-id -i ~/.ssh/tencent-rsync.pub ubuntu@101.32.216.139
 ssh -i ~/.ssh/tencent-rsync ubuntu@101.32.216.139 'echo ok'  # smoke test
 ```
 
-**Register the self-hosted GitHub Actions runner on vivobook:**
-1. Repo Settings → Actions → Runners → New self-hosted runner (Linux, x64)
-2. Follow the shown commands (`./config.sh --url ... --token ...`) with labels
-   `self-hosted,vivobook,linux`. Install as a systemd service so it survives reboots:
+**CI/CD path (SSH via Cloudflare Access, ubuntu-latest runner):**
+
+Vivobook has zero open inbound ports; SSH goes through Cloudflare Access
+(`cloudflared access ssh --hostname ssh.nafidinara.com`) with a service token.
+
+1. **Deploy keypair** (on your Mac):
    ```bash
-   sudo ./svc.sh install $USER
-   sudo ./svc.sh start
-   sudo ./svc.sh status
+   ssh-keygen -t ed25519 -f ~/.ssh/meridian-gh-deploy -N "" -C "meridian-gh-actions"
+   ssh-copy-id -i ~/.ssh/meridian-gh-deploy.pub vivobook-public
+   ssh -i ~/.ssh/meridian-gh-deploy vivobook-public 'echo OK'   # smoke test
    ```
-3. Add the runner user to the `docker` group: `sudo usermod -aG docker $USER && sudo systemctl restart actions.runner.*`
-4. On the runner box, authenticate to GHCR (needed for `docker pull`):
+
+2. **CF Access service token** (Zero Trust dashboard):
+   - Access → Service Auth → Service Tokens → Create Service Token
+   - Name: `meridian-github-actions`, duration: 1 year
+   - **Copy Client ID + Client Secret immediately** (secret shown only once)
+   - Access → Applications → the app protecting `ssh.nafidinara.com` → Policies
+     → Add: Action=`Service Auth`, Include=Service Token=`meridian-github-actions`
+
+3. **GitHub repo secrets** (Settings → Secrets → Actions):
+   - `CF_ACCESS_CLIENT_ID` — from the service token (ends in `.access`)
+   - `CF_ACCESS_CLIENT_SECRET` — from the service token
+   - `VIVOBOOK_SSH_KEY` — full contents of `~/.ssh/meridian-gh-deploy` (private half)
+
+4. **On the vivobook** — GHCR pull auth:
    ```bash
    read -s -p 'GHCR PAT (read:packages): ' PAT; echo
    echo "$PAT" | docker login ghcr.io -u umarmuhdhor --password-stdin
    ```
-5. **Security hardening:** Repo Settings → Actions → General → "Fork pull request
-   workflows from outside collaborators" → Require approval for **all** outside
-   collaborators. (The migration workflow's `if:` guard already restricts to
-   `push` on `dashboard`; this is defense-in-depth.)
+
+5. **Sanity check the whole path** — run the workflow's SSH bootstrap steps
+   locally to confirm everything wires up before the real cutover deploy:
+   ```bash
+   # Simulate what the ubuntu-latest runner will do:
+   cloudflared access ssh --hostname ssh.nafidinara.com < /dev/null 2>&1 | head -3
+   ```
 
 **On the merge branch (this):**
 - Do all file edits on `feat/vivobook-migration`.
@@ -196,9 +213,9 @@ sudo docker compose logs meridian --tail=100 | grep -E 'wallet|position|WRITE_UN
 # 2.8 Merge the migration branch to `dashboard` — this is the FIRST self-hosted-runner CI run
 cd <mac local repo>
 git checkout dashboard
-git merge --no-ff feat/vivobook-migration -m "chore: cutover to vivobook host + self-hosted runner CI"
+git merge --no-ff feat/vivobook-migration -m "chore: cutover to vivobook host + GitHub-hosted runner (ubuntu-latest, SSH via CF Access) CI"
 git push origin dashboard
-# Watch Actions tab. The deploy job should run on [self-hosted, vivobook].
+# Watch Actions tab. Deploy job runs on ubuntu-latest, tunnels through CF Access.
 # deploy.sh should pull the same :dashboard image (already deployed manually
 # in 2.5) and no-op the recreate. Health check = 200. Green.
 ```
@@ -267,5 +284,5 @@ reflect vivobook. Commit + push to `dashboard`. Self-hosted runner deploys
 - [ ] PnL poller ticking every 30s in logs
 - [ ] Telegram Calisto posted boot card + at least one status message
 - [ ] Sage bot responds to a `/status` prompt in Telegram group
-- [ ] GH Actions ran green on the merge commit, deploy job used self-hosted runner
+- [ ] GH Actions ran green on the merge commit, deploy job used GitHub-hosted runner (ubuntu-latest, SSH via CF Access)
 - [ ] `sudo docker compose ps` shows `meridian` + `meridian-web` both Up, no restart loop

@@ -20,7 +20,7 @@
 | **Screening decider** | **Sage** (Hermes agent on same host), `MERIDIAN_DECIDER=sage`, intra-docker delegation via `host.docker.internal:8643` → `sage-api-proxy` (socat) → `hermes:8642`. Local LLM loop is the fallback. |
 | **Telegram** | "Calisto" = notify-only (`MERIDIAN_TELEGRAM_INBOUND=false`, cards only); **Sage** (@SageHermesAnd_bot) is the conversational brain in the group. |
 | **Dashboard** | https://calisto.nafidinara.com (Cloudflare Access + 6-digit PIN) |
-| **Deploy** | push to `dashboard` → GitHub Actions (test+build on `ubuntu-latest`, deploy on `[self-hosted, vivobook]`) → GHCR → local pull |
+| **Deploy** | push to `dashboard` → GitHub Actions (`ubuntu-latest`) → GHCR + `scp`/`ssh` to vivobook over Cloudflare Access SSH → `deploy.sh` |
 | **Registry** | `ghcr.io/umarmuhdhor/meridian` (private) |
 | **Kill switch** | `cd ~/meridian && docker compose stop` |
 
@@ -30,9 +30,10 @@
 
 ```
                         ┌──── GitHub (umarmuhdhor/meridian) ────┐
-  git push dashboard ──►│ Actions:                              │
-                        │   test-build (ubuntu-latest)          │
-                        │   deploy     (self-hosted, vivobook)  │
+  git push dashboard ──►│ Actions (ubuntu-latest):              │
+                        │   test-build → push image             │
+                        │   deploy: cloudflared access ssh      │
+                        │     → scp/ssh vivobook → deploy.sh    │
                         └──────────────┬────────────────────────┘
                                        │ ghcr.io/…:<sha>
                                        ▼
@@ -124,10 +125,13 @@ push → .github/workflows/deploy-dashboard.yml
     7. cd ~/meridian && ./deploy/deploy.sh <sha> <scope>
 ```
 
-The deploy job runs on a self-hosted runner registered on the vivobook (labels
-`self-hosted,vivobook`). No inbound SSH from GitHub is needed — the runner
-polls GitHub for jobs. Deploy is `push:[dashboard]` only (an `if:` guard
-prevents accidental `pull_request` invocation from exposing secrets).
+The deploy job runs on `ubuntu-latest` (GitHub-hosted). Vivobook has zero
+open inbound ports — the runner reaches it through **Cloudflare Access SSH**:
+`cloudflared access ssh --hostname ssh.nafidinara.com` authenticated with a
+service token (`CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET` GH secrets),
+tunneled to the vivobook's sshd, deploy keypair (`VIVOBOOK_SSH_KEY`) does the
+final auth. Deploy is `push:[dashboard]` only (an `if:` guard prevents
+accidental `pull_request` invocation from exposing secrets to fork PRs).
 
 **`deploy/deploy.sh` on the box:**
 ```
@@ -161,17 +165,25 @@ docker login ghcr.io -u umarmuhdhor               # if not already
 
 ## 4. First-time setup (already done — here for rebuilds / new maintainers)
 
-**Self-hosted GitHub Actions runner on vivobook:**
-1. Repo Settings → Actions → Runners → New self-hosted runner (Linux, x64).
-2. Follow shown commands with labels `self-hosted,vivobook,linux`.
-3. Install as systemd service: `sudo ./svc.sh install $USER && sudo ./svc.sh start`.
-4. Runner user must be in `docker` group: `sudo usermod -aG docker $USER`
-   then restart runner service.
-5. Hardening — Settings → Actions → General → require approval for outside
-   collaborators' fork PRs. Workflow already restricts deploy to `push:[dashboard]`.
+**Deploy keypair** (on your Mac):
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/meridian-gh-deploy -N "" -C "meridian-gh-actions"
+ssh-copy-id -i ~/.ssh/meridian-gh-deploy.pub vivobook-public
+```
 
-No `VPS_HOST` / `VPS_USER` / `VPS_SSH_KEY` secrets needed anymore (removed
-during migration). GHCR push uses `GITHUB_TOKEN`.
+**CF Access service token** (Zero Trust → Access → Service Auth → Service Tokens):
+1. Create token `meridian-github-actions`, save Client ID + Secret (secret shown once).
+2. Attach to the Access application protecting `ssh.nafidinara.com`: add a
+   policy with Action=`Service Auth`, Include=Service Token=`meridian-github-actions`.
+
+**GitHub repo secrets** (Settings → Secrets → Actions):
+| Secret | Value |
+|---|---|
+| `CF_ACCESS_CLIENT_ID` | from the service token above (ends in `.access`) |
+| `CF_ACCESS_CLIENT_SECRET` | from the service token above |
+| `VIVOBOOK_SSH_KEY` | contents of `~/.ssh/meridian-gh-deploy` (the private half) |
+
+GHCR push uses `GITHUB_TOKEN` (built-in, no secret needed).
 
 **On the vivobook (one-time)** — GHCR pull auth:
 ```bash
@@ -317,8 +329,8 @@ should be `302` (redirect into Access).
 
 | Path | What |
 |---|---|
-| `.github/workflows/deploy-dashboard.yml` | the CI/CD pipeline (test-build on `ubuntu-latest`, deploy on `[self-hosted, vivobook]`) |
-| `deploy/deploy.sh` | on-box pull → cutover → health-check → rollback (unchanged from Tencent era; runs on the self-hosted runner now) |
+| `.github/workflows/deploy-dashboard.yml` | the CI/CD pipeline (both jobs on `ubuntu-latest`; deploy job SSHes to vivobook via Cloudflare Access) |
+| `deploy/deploy.sh` | on-box pull → cutover → health-check → rollback (unchanged from Tencent era; runs on vivobook via SCP+SSH from the deploy job) |
 | `docker-compose.yml` | production stack: meridian, meridian-web (2 containers). Reverse-proxy = vivobook's shared caddy + cloudflared. |
 | `deploy/MIGRATION-vivobook-runbook.md` | ordered runbook for the 2026-08-01 Tencent→vivobook migration (rehearsal, cutover, decommission, rollback) |
 | `deploy/SAGE-MERIDIAN-ROLLOUT.md` | **Historical** — Path 2 (Sage decider) via CF Tunnel; superseded by intra-host path in this migration. Kept for git-blame context. |
