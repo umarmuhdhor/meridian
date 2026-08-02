@@ -130,11 +130,23 @@ def _handle_deploy(args: dict, **kw) -> str:
 
 MRD_CLOSE_SCHEMA = {
     "name": "mrd_close_position",
-    "description": "Close a Meridian position by its on-chain position address (user-initiated).",
+    "description": (
+        "Close a Meridian position by its on-chain position_address (user-initiated). "
+        "You MUST provide a short human-readable `reason` — it becomes the "
+        "close_reason on the performance record + the Telegram card + the decision "
+        "log entry. Quote or paraphrase what the user asked (e.g. \"user asked to "
+        "exit BONK\", \"user liquidating before travel\")."
+    ),
     "parameters": {
         "type": "object",
-        "properties": {"position_address": _STR},
-        "required": ["position_address"],
+        "properties": {
+            "position_address": _STR,
+            "reason": {
+                "type": "string",
+                "description": "Short human-readable reason for the close. Required.",
+            },
+        },
+        "required": ["position_address", "reason"],
     },
 }
 
@@ -144,7 +156,8 @@ def _handle_close(args: dict, **kw) -> str:
         addr = str(args.get("position_address") or "").strip()
         if not addr:
             return tool_error("position_address is required")
-        return tool_result(post_tool("close_position", {"position_address": addr}, confirm=True))
+        reason = str(args.get("reason") or "").strip() or "user requested"
+        return tool_result(post_tool("close_position", {"position_address": addr, "reason": reason}, confirm=True))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 

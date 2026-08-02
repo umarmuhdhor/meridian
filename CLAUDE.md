@@ -383,10 +383,17 @@ happens when a file is served over the bridge. In production these live on the
 A `node:http` server (zero external deps) bound to **`127.0.0.1` only** (never
 `0.0.0.0`), token-authed. Started from `daemon.ts` when `DASHBOARD_ENABLED=true`.
 - Routes: `GET /health`, `/state/positions` (`?force=1` throttled 1×/10s),
-  `/state/summary`, `/state/file/:name` (whitelisted, `user-config` redacted),
-  `/events` (SSE — piggybacks the PnL-poller cache, **no new RPC**), `POST /tool`
-  (allowlist + write `confirm:true` + in-flight lock + optional `cycle_id` idempotency),
+  `/state/summary`, `/state/file/:name` (whitelisted, `user-config` redacted; the
+  `user-config` case reads via `ctx.configPath`, NOT `stateDir` — fixed 2026-08-02
+  after the empty-stub-at-stateDir 404 bug), `/events` (SSE — piggybacks the
+  PnL-poller cache, **no new RPC**), `POST /tool` (allowlist + write `confirm:true`
+  + in-flight lock + optional `cycle_id` idempotency + human-gate on `update_config`),
   `POST /chat` (GENERAL tick, read-only via `CHAT_READ_TOOLS`).
+- **`update_config` human-gate**: `POST /tool` with `name=update_config` AND a
+  `cycle_id` returns 403 (`human-gated; not permitted inside a delegation cycle`).
+  Only autonomous screening delegations attach `cycle_id`, so this hard-blocks
+  Sage (or any Path 2 delegate) from patching config mid-cycle. User chats never
+  carry a `cycle_id` → allowed. This is code-enforced, not prompt-enforced.
 - **`cycle_id` idempotency** (`dashboard/idempotency.ts`): a write carrying a `cycle_id`
   commits the key on success; a later write with the same key → 409. Guards the Path 2
   delegate→timeout→fallback double-deploy on the bridge path (the bridge bypasses the

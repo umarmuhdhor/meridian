@@ -4,6 +4,7 @@ import { CloseResultSchema } from "../../../domain/schemas/chain.js";
 import { logCloseDecision } from "../post/log-decision.js";
 import { notifyCloseHook } from "../post/notify.js";
 import { consolidateCloseHook } from "../post/consolidate.js";
+import { markClosedInRepoHook } from "../post/mark-closed.js";
 
 const ArgsSchema = z.object({
   position_address: z.string().min(1),
@@ -17,7 +18,7 @@ export const closePositionTool = defineTool({
   args: ArgsSchema,
   result: CloseResultSchema,
   oncePerSession: true,
-  post: [notifyCloseHook, logCloseDecision("MANAGER"), consolidateCloseHook],
+  post: [markClosedInRepoHook, notifyCloseHook, logCloseDecision("MANAGER"), consolidateCloseHook],
   execute: async ({ position_address, reason }, ctx) =>
     ctx.chain.closePosition(position_address, reason),
 });

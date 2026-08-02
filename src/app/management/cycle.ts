@@ -90,6 +90,26 @@ export async function runManagementCycle(deps: ManagementCycleDeps): Promise<Man
     return { kind: "no_positions" };
   }
 
+  // Reverse reconcile: any position tracked as OPEN in state.json but no longer
+  // on-chain (closed via close_position, pnl-poller direct call, Meteora UI, etc.)
+  // gets flipped to closed. Without this, state.json accumulates ghost "open"
+  // records and buildStateSummary reports stale counts (dashboard summary showed
+  // 36 ghost records vs 0 on-chain, 2026-08-02).
+  const nowIsoR = ctx.clock.now().toISOString();
+  const onChainIds = new Set(snap.positions.map((p) => p.position));
+  const tracked = await ctx.repos.positions.all();
+  for (const t of tracked) {
+    if (t.closed) continue;
+    if (onChainIds.has(t.position)) continue;
+    await ctx.repos.positions.upsert({
+      ...t,
+      closed: true,
+      closed_at: nowIsoR,
+      notes: [...(t.notes ?? []), "reconciled: no longer on-chain (external close or ghost record)"],
+    });
+    ctx.logger.info("management", `reconciled ghost-open position ${t.position.slice(0, 8)}… as closed`);
+  }
+
   for (const p of snap.positions) {
     if (await ctx.repos.positions.get(p.position)) continue;
     const nowIso = ctx.clock.now().toISOString();
