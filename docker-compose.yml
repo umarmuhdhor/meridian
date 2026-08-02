@@ -45,6 +45,10 @@ services:
       - MERIDIAN_CHAIN=meteora
       - MERIDIAN_MARKET=real
       - MERIDIAN_PRICE=jupiter
+      # Screening + conversational LLM delegated to Sage (Hermes).
+      # Local OpenRouter loop = fallback path on Sage transport error only.
+      - MERIDIAN_DECIDER=sage
+      - MERIDIAN_TELEGRAM_INBOUND=false
     volumes:
       - ${HOME}/meridian-data:/opt/data
       - ${HOME}/meridian/user-config.json:/app/user-config.json
