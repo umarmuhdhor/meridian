@@ -23,8 +23,16 @@ export function logDeployDecision(actor: DecisionActor): PostHook<{
 }, DeployResult> {
   return async (args, result, ctx) => {
     if (!result.success) return;
+    // Enrich pool_name from the tracked position when the caller (typically Sage
+    // via mrd_deploy_position) forgot to include it — trackDeployedPosition runs
+    // BEFORE this hook, so state.json already has the record for this position.
+    let poolName = args.pool_name ?? null;
+    if (!poolName && result.position_address) {
+      const tracked = await ctx.repos.positions.get(result.position_address);
+      poolName = tracked?.pool_name ?? null;
+    }
     const input = {
-      pool_name: args.pool_name ?? null,
+      pool_name: poolName,
       pool_address: args.pool_address,
       amount_sol: args.amount_sol,
       strategy: args.strategy,
@@ -39,7 +47,7 @@ export function logDeployDecision(actor: DecisionActor): PostHook<{
       type: "deploy",
       actor,
       pool: args.pool_address,
-      pool_name: sanitizeDecisionText(args.pool_name ?? null, 120),
+      pool_name: sanitizeDecisionText(poolName, 120),
       position: result.position_address,
       summary: sanitizeDecisionText(formatDeploySummary(input)),
       reason: sanitizeDecisionText(formatDeployReason(input), 500),
@@ -60,7 +68,12 @@ export function logDeployDecision(actor: DecisionActor): PostHook<{
 export function logCloseDecision(actor: DecisionActor): PostHook<{ position_address: string; reason: string }, CloseResult> {
   return async (args, result, ctx) => {
     if (!result.success) return;
+    // Enrich pool_name from the tracked position — the close_position tool doesn't
+    // receive it in args, but track-position wrote it at deploy time.
+    const tracked = await ctx.repos.positions.get(args.position_address);
+    const poolName = tracked?.pool_name ?? null;
     const input = {
+      pool_name: poolName,
       position_address: args.position_address,
       final_pnl_pct: result.final_pnl_pct,
       final_value_usd: result.final_value_usd,
@@ -73,7 +86,7 @@ export function logCloseDecision(actor: DecisionActor): PostHook<{ position_addr
       type: "close",
       actor,
       pool: result.pool_address,
-      pool_name: null,
+      pool_name: sanitizeDecisionText(poolName, 120),
       position: args.position_address,
       summary: sanitizeDecisionText(formatCloseSummary(input)),
       reason: sanitizeDecisionText(formatCloseReason(input), 500),
