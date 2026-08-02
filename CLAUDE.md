@@ -269,7 +269,12 @@ The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
    `skip` decision) if at `maxPositions` or `wallet.sol < deployAmountSol + gasReserve`.
 2. **Candidates**: `get_top_candidates` tool → discovery → `hardFilter` → `rankCandidates`.
 3. **0 candidates** → `no_deploy` decision, no LLM.
-4. **Decision** — two deciders, selected by `MERIDIAN_DECIDER`:
+4. **Diligence pre-enrichment** (added 2026-08-02): `enrichCandidates` fetches
+   `rugCheck.check(mint)` + `tokenInfo.getHolders(mint, 10)` in parallel per candidate
+   with a 3s per-call timeout, fails open. Result is injected as a `diligence:` line
+   per candidate in `formatCandidatesBlock`. This lets Sage's autonomous cycle veto
+   / override on FRESH data without racing the 90s timeout on gmgn-cli side calls.
+5. **Decision** — two deciders, selected by `MERIDIAN_DECIDER`:
    - default (`loop`): SCREENER prompt + candidate block, `runAgentLoop` `maxSteps:8`,
      `requireToolOnFirstStep:true` — the local LLM must call `deploy_position` (or justify).
    - **`sage`** (Path 2): delegate to the external Sage agent via the `SageDecider` port

@@ -36,8 +36,10 @@ This doc is the single source of truth for the integration. Code internals live 
 AUTONOMOUS SCREENING (Sage decides, real funds)
   Meridian cron (HK)                                   Sage api (vivobook)
     preflight + hardFilter + rankCandidates  [deterministic, unchanged]
+    enrichCandidates: parallel rugCheck + tokenInfo.getHolders per pick,
+      3s per-call timeout, fail open → inline "diligence:" line per candidate
     POST /v1/chat/completions ──CF Access──▶  reason w/ meridian-trading memory
-      {tailored goal + candidates + cycle_id}          pick a candidate
+      {tailored goal + candidates + diligence + cycle_id}   pick a candidate
       X-Hermes-Session-Key: meridian-trading           call mrd_deploy_position(cycle_id)
       timeout 90s                                            │
                     mrd-bridge.nafidinara.com ◀──CF Access──┘
@@ -157,3 +159,4 @@ profile dir — Hermes sets `HERMES_HOME` to the profile when run with `-p sage`
 5. **bridge-proxy orphans on meridian recreate** unless it's a compose service sharing meridian's netns (fixed).
 6. **Delegation prompt must be Sage-tailored** — sending Meridian's full SCREENER prompt (12 tool names Sage lacks) made Sage flail and time out; the focused "pick a candidate, call mrd_deploy_position, no other tools" prompt is what makes Sage actually decide.
 7. **Never double-restart `docker compose … gateway` mid-drain** — profiles get stranded in `draining` (reconcile only starts prior_state=running). One restart, full 120s settle; or reload one profile via s6.
+8. **Sage can't run diligence tools inside a cycle** (90s timeout, prompt forbids it) — early cycles ended with "requires GMGN-confirmed improvement, blocked by cycle constraints", leaving the wallet idle. Fix (2026-08-02): Meridian pre-enriches candidates itself (`enrichCandidates` in `src/app/screening/cycle.ts`) — parallel rugCheck + holder lookups per pick, 3s per-call timeout, fail open. The inline `diligence:` line gives Sage GMGN-equivalent verification for free; the sage prompt now explicitly says "the diligence data is already in the candidate block — do NOT fetch more". Fresh diligence is also the signal that justifies overriding a stale in-memory veto (token status changes minute-to-minute).
