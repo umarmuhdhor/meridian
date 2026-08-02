@@ -27,7 +27,7 @@ DRY_RUN="no"
 REG="${MERIDIAN_REG:-ghcr.io/umarmuhdhor/meridian}"
 COMPOSE_DIR="${MERIDIAN_DIR:-$HOME/meridian}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
-DC="sudo docker"
+DC="${DOCKER_CMD:-docker}"
 
 log() { echo "[deploy $(date -u +%H:%M:%S)] $*"; }
 run() {
