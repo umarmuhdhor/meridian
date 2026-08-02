@@ -140,7 +140,11 @@ export async function handleRequest(
     const file = resolveFile(name); // null unless exact whitelist key
     if (!file) return json(res, 400, { error: "invalid file name" });
     try {
-      const data = JSON.parse(await readFile(path.join(stateDir, file), "utf8")) as unknown;
+      // user-config lives at ctx.configPath (daemon cwd = /app), NOT stateDir
+      // (/opt/data). In production the two diverge and only ctx.configPath is the
+      // source of truth — reading from stateDir yielded an empty stub file.
+      const fpath = name === "user-config" ? ctx.configPath : path.join(stateDir, file);
+      const data = JSON.parse(await readFile(fpath, "utf8")) as unknown;
       return json(res, 200, name === "user-config" ? redactSecrets(data) : data);
     } catch {
       return json(res, 404, { error: "not found" });

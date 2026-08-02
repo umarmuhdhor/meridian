@@ -168,3 +168,67 @@ def _handle_claim(args: dict, **kw) -> str:
         return tool_result(post_tool("claim_fees", {"position_address": addr}, confirm=True))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
+
+
+# ── config tools (read + patch; secrets are redacted server-side) ───────────
+
+MRD_GET_CONFIG_SCHEMA = {
+    "name": "mrd_get_config",
+    "description": (
+        "Read Meridian's live user-config.json — every knob Meridian trades by "
+        "(screening thresholds, exit rules, deploy amount, cadence, LLM models, "
+        "strategy, etc.). Flat key/value shape. Secrets are redacted server-side. "
+        "Call this BEFORE mrd_update_config so you know the exact key names + "
+        "current values you are changing."
+    ),
+    "parameters": {"type": "object", "properties": {}},
+}
+
+
+def _handle_get_config(args: dict, **kw) -> str:
+    try:
+        return tool_result(get("/state/file/user-config"))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+MRD_UPDATE_CONFIG_SCHEMA = {
+    "name": "mrd_update_config",
+    "description": (
+        "Patch one or more flat keys in Meridian's user-config.json. Applies live "
+        "(no restart). Unknown keys are reported, not applied. Type coercion is "
+        "best-effort (number/boolean). Include a short `reason` so the change "
+        "shows up in the decision log with context. "
+        "Common keys: stopLossPct, takeProfitPct, trailingTriggerPct, trailingDropPct, "
+        "deployAmountSol, maxPositions, minFeeActiveTvlRatio, minVolume, minHolders, "
+        "screeningIntervalMin, managementIntervalMin, strategy, defaultBinsBelow."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "changes": {
+                "type": "object",
+                "description": "Flat map of key → new value. Example: {\"stopLossPct\": -20, \"takeProfitPct\": 8}",
+            },
+            "reason": {
+                "type": "string",
+                "description": "One-line reason for this change (surfaces in the decision log).",
+            },
+        },
+        "required": ["changes"],
+    },
+}
+
+
+def _handle_update_config(args: dict, **kw) -> str:
+    try:
+        changes = args.get("changes")
+        if not isinstance(changes, dict) or not changes:
+            return tool_error("changes must be a non-empty object of key → value")
+        payload: dict = {"changes": changes}
+        reason = args.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            payload["reason"] = reason.strip()
+        return tool_result(post_tool("update_config", payload, confirm=True))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)

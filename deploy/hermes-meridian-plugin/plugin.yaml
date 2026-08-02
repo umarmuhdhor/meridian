@@ -8,6 +8,8 @@ provides_tools:
   - mrd_get_summary
   - mrd_get_wallet
   - mrd_get_candidates
+  - mrd_get_config
   - mrd_deploy_position
   - mrd_close_position
   - mrd_claim_fees
+  - mrd_update_config
