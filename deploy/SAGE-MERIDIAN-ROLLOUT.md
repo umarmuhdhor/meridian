@@ -1,5 +1,16 @@
 # Sage ⇄ Meridian (Path 2) — live architecture & operations
 
+**⚠️ SUPERSEDED (2026-08-01).** This doc describes the Tencent-era Path 2 architecture
+where Meridian (on Tencent HK VPS) reached Sage on vivobook over a Cloudflare Tunnel
+(`sage-api.nafidinara.com` + `mrd-bridge.nafidinara.com`) with CF Access service tokens.
+Meridian is now co-located with Sage on vivobook; delegation is intra-host via
+`http://host.docker.internal:8643` (socat → hermes:8642, no CF Access). Current
+architecture in [`OPERATIONS.md §1`](OPERATIONS.md#1-architecture); migration story in
+[`MIGRATION-vivobook-runbook.md`](MIGRATION-vivobook-runbook.md). Kept for git-blame
+context on the delegation design.
+
+---
+
 **Status: LIVE (2026-07-14).** Sage (a Hermes agent on the vivobook home server) is
 Meridian's primary screening decider. It reasons with its own memory, deploys real
 funds through Meridian's dashboard bridge, and answers questions in the Telegram

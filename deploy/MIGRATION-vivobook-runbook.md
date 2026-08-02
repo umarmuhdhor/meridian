@@ -1,5 +1,13 @@
 # Meridian — Vivobook Migration Runbook
 
+> **✅ STATUS: COMPLETED 2026-08-02.** Migration from Tencent HK VPS →
+> vivobook home server executed successfully. Sage delegation moved from
+> CF-tunneled HTTPS to intra-host docker (`host.docker.internal:8643`).
+> Tencent Meridian containers + data scrubbed; Tencent CF Tunnel deleted.
+> The VPS itself is retained for other projects. Current live architecture:
+> [`OPERATIONS.md`](OPERATIONS.md). This runbook kept as a reference for
+> any future host swap.
+>
 > Ordered executable checklist for moving the LIVE Meridian daemon from
 > Tencent HK VPS (`101.32.216.139`) to the vivobook home server, co-located
 > with Sage. Companion doc: design at

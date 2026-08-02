@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# ⚠️ HISTORICAL — validates the Tencent-era Path 2 (CF-tunneled) transport
+# between Meridian@Tencent and Sage@vivobook. Post-migration (2026-08-01)
+# Meridian is co-located with Sage; delegation is intra-host and needs no
+# CF Access. This script's SAGE_BASE_URL + CF headers do not apply anymore.
+# Kept for git-blame context.
+#
 # Read-only end-to-end validation of the Sage⇄Meridian (Path 2) cutover.
 # Run this AFTER the transport + plugin + arming steps. It performs NO writes and
 # NO deploys — it only reads, so it's safe to run against the live system.

@@ -54,11 +54,15 @@ services:
     # Requires Docker Engine >= 20.10.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # No host port binding — vivobook already has :3000 taken by another
-    # service. Dashboard access is via Caddy on the `web` net (Caddyfile:
-    # `calisto.nafidinara.com { reverse_proxy meridian:3000 }`). For SSH-tunnel
-    # admin, exec into the container: `docker exec meridian curl -sI localhost:3000`,
-    # or point Caddy at a private host header + ssh -L for local browsing.
+    # Dashboard :3000 is NOT host-bound (vivobook's :3000 is taken; Caddy on
+    # `web` net serves calisto.nafidinara.com → meridian:3000 by container DNS).
+    # But :8788 IS host-bound so the Sage (Hermes) plugin, which runs in a
+    # `network_mode: host` container, can reach the bridge via
+    # http://127.0.0.1:8788 → socat sidecar → meridian bridge 127.0.0.1:8787.
+    # NOTE: port bindings for services sharing this netns (bridge-proxy) MUST
+    # be declared here on the owning service, not on the sidecar.
+    ports:
+      - "127.0.0.1:8788:8788"
     networks: [web]
 
   meridian-web:
@@ -82,3 +86,19 @@ services:
     network_mode: "service:meridian"
     depends_on:
       - meridian
+
+  # Sidecar exposing the Meridian dashboard bridge (127.0.0.1:8787 inside
+  # meridian's netns) to the vivobook host on 127.0.0.1:8788, so the Sage
+  # (Hermes) plugin can call mrd_deploy_position/close_position/etc via
+  # MERIDIAN_BRIDGE_URL=http://127.0.0.1:8788. `hermes` runs `network_mode: host`
+  # so it reaches the host loopback directly. Shares meridian's netns so
+  # `docker compose up -d --force-recreate meridian` re-attaches it every
+  # deploy (standalone `--network container:meridian` orphans on recreate).
+  bridge-proxy:
+    image: alpine/socat
+    container_name: meridian-bridge-proxy
+    restart: unless-stopped
+    network_mode: "service:meridian"
+    depends_on:
+      - meridian
+    command: tcp-listen:8788,fork,reuseaddr tcp-connect:127.0.0.1:8787

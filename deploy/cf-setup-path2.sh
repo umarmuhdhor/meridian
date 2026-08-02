@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# ⚠️ HISTORICAL — Tencent-era Cloudflare setup for Path 2 (Sage <-> Meridian
+# transport). Not needed on the vivobook: Meridian reaches Sage intra-host at
+# host.docker.internal:8643 with no CF Access. Kept for git-blame context.
+# Current architecture: deploy/OPERATIONS.md §1.
+#
 # Cloudflare-side setup for Path 2 (Sage <-> Meridian transport).
 #
 # Auto-mode agents are blocked from mutating live DNS / Access, so run this

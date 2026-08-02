@@ -81,6 +81,13 @@ selecting one PM2 app via `--only`:
 - **sage-api-proxy + hermes** live in the Sage stack (`~/.hermes/hermes-agent/`).
   This repo doesn't manage them either. Meridian only consumes the socat endpoint
   at `host.docker.internal:8643`.
+- **`bridge-proxy`** (socat, in meridian's netns) exposes the bridge on
+  `127.0.0.1:8788` on the vivobook host, so the Sage Hermes plugin (running in
+  the host-net `hermes` container) can call Meridian's `/tool` endpoint via
+  `MERIDIAN_BRIDGE_URL=http://127.0.0.1:8788`. Meridian → Sage (delegation) +
+  Sage → Meridian (tool invocation) both work; the tool-invocation direction
+  needs this sidecar because the bridge itself binds `127.0.0.1` inside
+  meridian's netns for defence-in-depth.
 
 Why split meridian ↔ meridian-web: a dashboard change should not restart a live
 trading daemon.

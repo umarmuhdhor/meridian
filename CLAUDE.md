@@ -17,10 +17,14 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
    JS was retired (`legacy-js` git tag). Architecture is **hexagonal**:
    `domain` (pure) → `ports` (interfaces) → `adapters` (implementations) →
    `app` (use-cases) → `entrypoints` (DI wiring).
-2. **Meridian is deployed and trading live.** 3 Docker containers on a Tencent HK
-   VPS, auto-deployed from `dashboard` via GitHub Actions → GHCR, PIN-gated
-   dashboard at `calisto.nafidinara.com`. **All deploy/ops details live in
-   [`deploy/OPERATIONS.md`](deploy/OPERATIONS.md)** — this file is code internals only.
+2. **Meridian is deployed and trading live.** 2 Docker containers (`meridian` +
+   `meridian-web`) on the **vivobook home server**, co-located with Sage
+   (Hermes agent) for intra-host screening delegation. Auto-deployed from
+   `dashboard` via GitHub Actions → GHCR → CF-Access-tunneled SSH to vivobook.
+   PIN-gated dashboard at `calisto.nafidinara.com` behind Cloudflare Access.
+   **All deploy/ops details live in [`deploy/OPERATIONS.md`](deploy/OPERATIONS.md)**
+   — this file is code internals only. Migration history + runbook:
+   [`deploy/MIGRATION-vivobook-runbook.md`](deploy/MIGRATION-vivobook-runbook.md).
 
 ---
 
@@ -360,8 +364,8 @@ happens when a file is served over the bridge. In production these live on the
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_ALLOWED_USER_IDS` | ops surface + auth. |
 | `MERIDIAN_TELEGRAM_INBOUND` | `false` → Calisto is notify-only (outbound cards, NO inbound LLM REPL). Default (unset) = inbound on. |
 | **`MERIDIAN_DECIDER`** | `sage` → screening delegates the deploy decision to Sage (Path 2); anything else / unset = local LLM loop. |
-| `SAGE_BASE_URL` / `SAGE_API_KEY` / `SAGE_SESSION_KEY` / `SAGE_TIMEOUT_MS` | Sage endpoint (Hermes api), memory-scope header, delegation timeout (default 90s). Only read when `MERIDIAN_DECIDER=sage`. |
-| `SAGE_CF_ACCESS_CLIENT_ID` / `SAGE_CF_ACCESS_CLIENT_SECRET` | CF Access service-token headers for the Sage endpoint (when fronted by Cloudflare Access). |
+| `SAGE_BASE_URL` / `SAGE_API_KEY` / `SAGE_SESSION_KEY` / `SAGE_TIMEOUT_MS` | Sage endpoint (Hermes api), memory-scope header, delegation timeout (default 90s). Only read when `MERIDIAN_DECIDER=sage`. On vivobook production the URL is intra-host: `http://host.docker.internal:8643` (see `docker-compose.yml` `extra_hosts`). |
+| `SAGE_CF_ACCESS_CLIENT_ID` / `SAGE_CF_ACCESS_CLIENT_SECRET` | **Historical** — CF Access service-token headers used when Sage was fronted by Cloudflare Access (pre-2026-08-01 Tencent era). Intra-host path drops them; the code still reads them if set. |
 | `SOL_PRICE_USD` | static-price fallback (default 150). |
 | `DRY_RUN` | **surfaced only as a HiveMind capability flag — NOT a gating var in the TS code.** |
 
