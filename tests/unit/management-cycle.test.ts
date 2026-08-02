@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { planForPosition, runManagementCycle } from "../../src/app/management/cycle.js";
 import { createRegistry } from "../../src/app/tools/registry.js";
-import { createFakeLLM } from "../../src/adapters/llm/fake.js";
 import { createDryRunChainClient } from "../../src/adapters/chain/dry-run.js";
 import { fixedClock } from "../../src/ports/clock.js";
 import { closePositionTool } from "../../src/app/tools/impls/close-position.js";
@@ -93,19 +92,17 @@ describe("runManagementCycle", () => {
   it("no_positions when wallet has none", async () => {
     const chain = createDryRunChainClient({ clock: CLOCK });
     const ctx = makeCtx({ chain });
-    const llm = createFakeLLM({ script: [] });
-    const r = await runManagementCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    const r = await runManagementCycle({ ctx, registry: REGISTRY });
     expect(r.kind).toBe("no_positions");
   });
 
-  it("all_stay: LLM never invoked", async () => {
+  it("all_stay when no rule fires", async () => {
     const chain = createDryRunChainClient({
       clock: CLOCK,
       seed: { positions: [pos({ pnl_pct: 1, unclaimed_fees_usd: 1 })] },
     });
     const ctx = makeCtx({ chain });
-    const llm = createFakeLLM({ script: [] }); // empty script — throws if called
-    const r = await runManagementCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    const r = await runManagementCycle({ ctx, registry: REGISTRY });
     expect(r.kind).toBe("all_stay");
     if (r.kind === "all_stay") expect(r.positions).toBe(1);
   });
@@ -117,9 +114,8 @@ describe("runManagementCycle", () => {
     });
     const positions = statefulPositionRepo();
     const ctx = makeCtx({ chain, repos: { positions } });
-    const llm = createFakeLLM({ script: [] }); // all STAY → LLM never invoked
     expect(await positions.all()).toHaveLength(0);
-    await runManagementCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    await runManagementCycle({ ctx, registry: REGISTRY });
     const tracked = await positions.all();
     expect(tracked).toHaveLength(1);
     expect(tracked[0]?.position).toBe("posA");
@@ -128,53 +124,53 @@ describe("runManagementCycle", () => {
     expect(tracked[0]?.deployed_at).toBeTruthy();
   });
 
-  it("invoked: agent runs and closes stop-loss position", async () => {
+  it("executed: closes stop-loss position via direct tool call", async () => {
     const chain = createDryRunChainClient({
       clock: CLOCK,
       seed: { positions: [pos({ pnl_pct: -60 })] },
     });
     const ctx = makeCtx({ chain });
-    const llm = createFakeLLM({
-      script: [
-        {
-          kind: "tool_calls",
-          calls: [{ name: "close_position", args: { position_address: "posA", reason: "stop loss" } }],
-        },
-        { kind: "assistant", text: "closed" },
-      ],
-    });
-    const r = await runManagementCycle({ ctx, llm, registry: REGISTRY, model: "test" });
-    expect(r.kind).toBe("invoked");
-    if (r.kind === "invoked") {
-      const close = r.agent.toolCalls.find((t) => t.name === "close_position");
+    const r = await runManagementCycle({ ctx, registry: REGISTRY });
+    expect(r.kind).toBe("executed");
+    if (r.kind === "executed") {
+      const close = r.results.find((x) => x.plan.action === "CLOSE");
       expect(close?.ok).toBe(true);
       expect(r.plans.find((p) => p.action === "CLOSE")).toBeDefined();
     }
-    // Post-hook wrote decision entry
     const ds = await ctx.repos.decisions.recent(1);
     expect(ds[0]?.type).toBe("close");
   });
 
-  it("invoked: agent claims fees on CLAIM action", async () => {
+  it("executed: claims fees on CLAIM action via direct tool call", async () => {
     const chain = createDryRunChainClient({
       clock: CLOCK,
       seed: { positions: [pos({ unclaimed_fees_usd: 12 })] },
     });
     const ctx = makeCtx({ chain });
-    const llm = createFakeLLM({
-      script: [
-        {
-          kind: "tool_calls",
-          calls: [{ name: "claim_fees", args: { position_address: "posA" } }],
-        },
-        { kind: "assistant", text: "claimed" },
-      ],
-    });
-    const r = await runManagementCycle({ ctx, llm, registry: REGISTRY, model: "test" });
-    expect(r.kind).toBe("invoked");
-    if (r.kind === "invoked") {
-      const claim = r.agent.toolCalls.find((t) => t.name === "claim_fees");
+    const r = await runManagementCycle({ ctx, registry: REGISTRY });
+    expect(r.kind).toBe("executed");
+    if (r.kind === "executed") {
+      const claim = r.results.find((x) => x.plan.action === "CLAIM");
       expect(claim?.ok).toBe(true);
+    }
+  });
+
+  it("executed: closes MULTIPLE stop-loss positions in one tick (was capped at 1 by LLM once-per-session lock)", async () => {
+    const chain = createDryRunChainClient({
+      clock: CLOCK,
+      seed: {
+        positions: [
+          pos({ position: "posA", pnl_pct: -60 }),
+          pos({ position: "posB", pnl_pct: -70 }),
+        ],
+      },
+    });
+    const ctx = makeCtx({ chain });
+    const r = await runManagementCycle({ ctx, registry: REGISTRY });
+    expect(r.kind).toBe("executed");
+    if (r.kind === "executed") {
+      const closes = r.results.filter((x) => x.plan.action === "CLOSE" && x.ok);
+      expect(closes).toHaveLength(2);
     }
   });
 });

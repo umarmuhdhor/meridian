@@ -516,7 +516,7 @@ async function main(): Promise<void> {
     const manageMs = ctx.config.schedule.managementIntervalMin * 60_000;
     console.log(`  screening every ${screenMs / 1000}s | management every ${manageMs / 1000}s`);
     scheduler.every(screenMs, () => runScreeningCycle({ ctx, llm, registry, model: modelFor("screening"), ...screeningExtra }).then(() => {}), "screening");
-    scheduler.every(manageMs, () => runManagementCycle({ ctx, llm, registry, model: modelFor("management") }).then(() => {}), "management");
+    scheduler.every(manageMs, () => runManagementCycle({ ctx, registry }).then(() => {}), "management");
     const pollerHandle = createPnlPoller({
       clock: ctx.clock,
       logger: ctx.logger,

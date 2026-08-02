@@ -1,9 +1,6 @@
 import type { AppContext } from "../tools/context.js";
-import type { LLMClient } from "../../ports/llm-client.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import { runAgentLoop, type AgentLoopResult } from "../agent/loop.js";
-import { buildSystemPrompt } from "../../domain/prompt/builder.js";
-import { MANAGER_TOOLS } from "../../domain/prompt/role-tools.js";
+import { executeTool, type ToolError } from "../tools/execute.js";
 import { getDeterministicCloseRule } from "../../domain/rules/close-rules.js";
 import type { OnChainPosition } from "../../domain/schemas/chain.js";
 
@@ -17,15 +14,19 @@ export interface PositionPlan {
 
 export interface ManagementCycleDeps {
   ctx: AppContext;
-  llm: LLMClient;
   registry: ToolRegistry;
-  model: string;
+}
+
+export interface ExecutedAction {
+  plan: PositionPlan;
+  ok: boolean;
+  error?: ToolError;
 }
 
 export type ManagementOutcome =
   | { kind: "no_positions" }
   | { kind: "all_stay"; positions: number }
-  | { kind: "invoked"; plans: PositionPlan[]; agent: AgentLoopResult };
+  | { kind: "executed"; plans: PositionPlan[]; results: ExecutedAction[] };
 
 /**
  * Pure — decide the action for a single position. Priority:
@@ -66,27 +67,22 @@ export function planForPosition(
   return { position, action: "STAY", reason: "all rules pass" };
 }
 
-function formatPlanBlock(plans: PositionPlan[]): string {
-  return plans
-    .map((p, i) => {
-      const pnl = p.position.pnl_pct == null ? "?" : `${p.position.pnl_pct.toFixed(2)}%`;
-      return `  [${i + 1}] ${p.position.pair} pos=${p.position.position.slice(0, 8)}... pnl=${pnl} → ${p.action} (${p.reason})`;
-    })
-    .join("\n");
-}
-
 /**
- * Hybrid decider — mostly deterministic, LLM only for CLOSE/CLAIM execution.
+ * Fully deterministic — no LLM. planForPosition picks the action; executeTool
+ * runs it (with the full safety-gate + post-hook pipeline: notify cards, decision
+ * log, auto-swap consolidation). LLM was previously used only to emit tool_calls,
+ * adding latency, cost, and a once-per-session lock that capped closes to one
+ * per cycle. Removing it fixes all three.
  *
  *   1. Fetch positions with `force: true` (fresh count).
- *   2. Compute action plan for each position via `planForPosition`.
- *   3. If every action is STAY → return `all_stay` (LLM never called).
- *   4. Else build a system prompt + goal listing the plans and invoke agent loop.
- *      The LLM executes; it does NOT re-evaluate — matches the current JS design that
- *      prevents hallucinated rule reversal.
+ *   2. Reconcile any on-chain position missing from the tracking store.
+ *   3. planForPosition per position.
+ *   4. If every action is STAY → return `all_stay`.
+ *   5. Else invoke each non-STAY action directly via executeTool, sequentially
+ *      (safer than parallel — same wallet, same nonce space).
  */
 export async function runManagementCycle(deps: ManagementCycleDeps): Promise<ManagementOutcome> {
-  const { ctx, llm, registry, model } = deps;
+  const { ctx, registry } = deps;
 
   const snap = await ctx.chain.getMyPositions({ force: true });
   if (snap.total_positions === 0) {
@@ -94,11 +90,6 @@ export async function runManagementCycle(deps: ManagementCycleDeps): Promise<Man
     return { kind: "no_positions" };
   }
 
-  // Self-heal: persist any on-chain position missing from the tracking store so
-  // trailing-TP (needs stored peak) + age/low-yield rules (need deployed_at) work.
-  // deploy_position tracks new deploys directly; this covers pre-fix positions and
-  // any edge case where the deploy hook didn't run. Uses snapshot metadata where the
-  // datapi provides it; deployed_at falls back to first-seen time.
   for (const p of snap.positions) {
     if (await ctx.repos.positions.get(p.position)) continue;
     const nowIso = ctx.clock.now().toISOString();
@@ -132,54 +123,44 @@ export async function runManagementCycle(deps: ManagementCycleDeps): Promise<Man
   }
 
   const plans = snap.positions.map((p) => planForPosition(p, ctx));
-  const anyAction = plans.some((p) => p.action !== "STAY");
-  if (!anyAction) {
+  const actionsList = plans.filter((p) => p.action !== "STAY");
+  if (actionsList.length === 0) {
     ctx.logger.info("management", `all ${plans.length} positions STAY`);
     return { kind: "all_stay", positions: plans.length };
   }
 
-  const [wallet, activeStrategy, recentDecisions] = await Promise.all([
-    ctx.chain.getWalletBalance(),
-    ctx.repos.strategies.getActive(),
-    ctx.repos.decisions.recent(5),
-  ]);
+  const results: ExecutedAction[] = [];
+  for (const plan of actionsList) {
+    const invocation =
+      plan.action === "CLOSE"
+        ? {
+            name: "close_position",
+            args: { position_address: plan.position.position, reason: plan.reason },
+          }
+        : {
+            name: "claim_fees",
+            args: { position_address: plan.position.position },
+          };
 
-  const systemPrompt = buildSystemPrompt({
-    role: "MANAGER",
-    wallet,
-    positions: snap,
-    config: ctx.config,
-    activeStrategy,
-    recentDecisions,
-  });
-
-  const actionsList = plans.filter((p) => p.action !== "STAY");
-  const goal = [
-    "MANAGEMENT CYCLE — execute the following pre-decided actions. Do NOT re-evaluate rules.",
-    "",
-    "ACTIONS (do these in order):",
-    formatPlanBlock(actionsList),
-    "",
-    "For CLOSE actions: call `close_position` with the exact position_address and use the reason string above.",
-    "For CLAIM actions: call `claim_fees` with the exact position_address.",
-  ].join("\n");
-
-  const agent = await runAgentLoop(
-    { llm, registry, ctx },
-    {
-      role: "MANAGER",
-      goal,
-      systemPrompt,
-      model,
-      maxSteps: 6 + plans.length * 2,
-      toolFilter: MANAGER_TOOLS,
-      requireToolOnFirstStep: true,
-    },
-  );
+    const r = await executeTool(registry, invocation, ctx);
+    if (r.ok) {
+      results.push({ plan, ok: true });
+      ctx.logger.info(
+        "management",
+        `${plan.action} ${plan.position.position.slice(0, 8)}… ok (${plan.reason})`,
+      );
+    } else {
+      results.push({ plan, ok: false, error: r.error });
+      ctx.logger.warn(
+        "management",
+        `${plan.action} ${plan.position.position.slice(0, 8)}… failed: ${r.error.kind}`,
+      );
+    }
+  }
 
   ctx.logger.info(
     "management",
-    `invoked agent — steps=${agent.steps} finish=${agent.finishReason} plans=${actionsList.length}`,
+    `executed ${results.filter((r) => r.ok).length}/${results.length} actions`,
   );
-  return { kind: "invoked", plans, agent };
+  return { kind: "executed", plans, results };
 }

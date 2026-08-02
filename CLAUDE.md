@@ -38,10 +38,10 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 - **Entry**: `node dist/entrypoints/daemon.js` (dev: `tsx watch src/entrypoints/daemon.ts`).
   `MERIDIAN_AUTONOMOUS=true` → resident daemon (cron + Telegram); otherwise a
   one-shot single screening cycle.
-- **Three agent roles** (labels; tool access enforced by `toolFilter`, not the role):
-  - `SCREENER` — every `screeningIntervalMin`, picks a pool, calls `deploy_position`.
-  - `MANAGER` — every `managementIntervalMin`, executes deterministic exit decisions.
-  - `GENERAL` — ad-hoc chat (Telegram free-form, dashboard `/chat`).
+- **Two LLM-driven roles + one deterministic cycle** (tool access enforced by `toolFilter`, not the role):
+  - `SCREENER` — every `screeningIntervalMin`, picks a pool, calls `deploy_position`. Delegated to Sage in production (`MERIDIAN_DECIDER=sage`); local loop is fallback.
+  - **Management (deterministic, no LLM)** — every `managementIntervalMin`, `planForPosition` decides, `executeTool` runs it. Rewired from LLM-in-the-loop → direct calls on 2026-08-02.
+  - `GENERAL` — ad-hoc chat (dashboard `/chat`). Telegram inbound is now handled by Sage (Hermes), not this role.
 - **State = JSON files** at `STATE_DIR` (default cwd), one repo per file, atomic writes.
   No DB.
 - **The real safety gates are `MERIDIAN_CHAIN=meteora` + `MERIDIAN_WRITE_UNSAFE=true`.**
@@ -208,7 +208,7 @@ tool_calls), `Notifier`+`LiveMessageHandle`, `TelegramInbound`, `HiveMindClient`
 | Role | Tool list (`src/domain/prompt/role-tools.ts`) | Caller |
 |---|---|---|
 | `SCREENER` | `SCREENER_TOOLS` (12) — deploy + discovery/enrichment | `screening/cycle.ts:167`, `requireToolOnFirstStep:true` |
-| `MANAGER` | `MANAGER_TOOLS` (5) — close/claim/swap + reads | `management/cycle.ts:138`, `health/cycle.ts:65` |
+| `MANAGER` | `MANAGER_TOOLS` (5) — close/claim/swap + reads | `health/cycle.ts:65` (management cycle no longer uses this — it calls `executeTool` directly since 2026-08-02) |
 | `GENERAL` | `GENERAL_TOOLS` (10) | `telegram/router.ts:365`, `requireToolOnFirstStep:false` |
 
 There is **no INTENT-pattern matcher** in the TS version — GENERAL is simply the
@@ -278,13 +278,17 @@ The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
      "no-deploy" is NOT a failure — never falls back on it. Full ops:
      [`deploy/SAGE-MERIDIAN-ROLLOUT.md`](deploy/SAGE-MERIDIAN-ROLLOUT.md).
 
-### Management cycle (deterministic decides, LLM only executes)
+### Management cycle (fully deterministic — no LLM)
 1. `getMyPositions({force:true})`; `planForPosition` per position:
    deterministic close rule → else CLAIM if `unclaimed_fees_usd >= minClaimAmount`
    → else STAY.
-2. If **all STAY → the LLM is never called** (`{kind:"all_stay"}`).
-3. Else build a MANAGER goal listing the assigned actions ("execute … Do NOT
-   re-evaluate rules") and run the loop, `MANAGER_TOOLS`, `requireToolOnFirstStep:true`.
+2. If **all STAY → `{kind:"all_stay"}`**.
+3. Else iterate non-STAY actions sequentially, invoke `close_position` /
+   `claim_fees` **directly via `executeTool`** (safety gates + post-hooks + notify
+   card + decision log + auto-swap still fire). Returns `{kind:"executed", results}`.
+   No LLM: zero token cost, no latency, no once-per-session cap on closes-per-tick
+   (the LLM loop's `oncePerSession` lock on `close_position` was silently capping
+   this to 1 close per cycle). Removed 2026-08-02.
 
 ### PnL poller (trailing-TP two-phase confirm)
 - Tick 1: a trailing drop (`peak - current >= trailingDropPct`, with
