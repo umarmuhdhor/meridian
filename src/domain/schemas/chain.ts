@@ -67,6 +67,14 @@ export const DeployResultSchema = z.object({
   tx: z.string().nullable(),
   dry_run: z.boolean().default(false),
   bin_step: z.number().int().positive().optional(),
+  // Enriched from args so the notifier has pool name, base mint, and the
+  // pool-quality signals the screener used to pick this pool. All optional
+  // because the on-chain deploy path only returns the placement itself.
+  pool_name: z.string().nullable().optional(),
+  base_mint: z.string().nullable().optional(),
+  volatility: z.number().nullable().optional(),
+  fee_tvl_ratio: z.number().nullable().optional(),
+  organic_score: z.number().nullable().optional(),
 });
 export type DeployResult = z.infer<typeof DeployResultSchema>;
 
@@ -91,6 +99,12 @@ export const CloseResultSchema = z.object({
   reason: z.string(),
   tx: z.string().nullable(),
   dry_run: z.boolean().default(false),
+  // Enriched from the pre-close snapshot at the call site so the notifier
+  // can render a human-useful close message instead of `pnl: ?% / fees: $0`.
+  pair: z.string().nullable().optional(),
+  amount_sol_initial: z.number().nullable().optional(),
+  age_minutes: z.number().int().nonnegative().nullable().optional(),
+  peak_pnl_pct: z.number().nullable().optional(),
 });
 export type CloseResult = z.infer<typeof CloseResultSchema>;
 

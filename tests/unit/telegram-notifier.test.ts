@@ -65,7 +65,7 @@ describe("createTelegramNotifier — outbound events", () => {
     });
     const text = String(calls[0]?.body.text);
     expect(text).toContain("Deployed");
-    expect(text).toContain("bid_ask");
+    expect(text).toContain("bid-ask");
     expect(text).toContain("100..200");
     expect(text).toContain("SIG_1");
     // Meteora deep link for one-tap open

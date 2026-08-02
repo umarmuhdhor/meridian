@@ -230,7 +230,9 @@ describe("routeTelegramMessage — control commands", () => {
     expect(chain.peekPositions().map((p) => p.position)).toEqual([
       "POS_ONE_1111111111111111111111111",
     ]);
-    expect(notifyTexts(notifier).join("\n")).toMatch(/Closed #2 BBB\/SOL/);
+    const closes = notifier.recorded.filter((r) => r.type === "close");
+    expect(closes.length).toBe(1);
+    expect(closes[0]).toMatchObject({ type: "close", result: { pair: "BBB/SOL", success: true } });
   });
 
   it("/close with bad index reports without touching chain", async () => {

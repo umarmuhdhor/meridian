@@ -5,6 +5,11 @@ import type {
   SwapResult,
 } from "../../domain/schemas/chain.js";
 import type { Logger } from "../../ports/logger.js";
+import {
+  activeBinPosition,
+  binRangeToPricePct,
+  explainStrategy,
+} from "../../domain/format/decision-strings.js";
 import type {
   LiveMessageHandle,
   Notifier,
@@ -205,23 +210,56 @@ export function createTelegramNotifier(opts: TelegramNotifierOptions): Notifier 
     },
     async notifyDeploy(r: DeployResult) {
       const dryTag = r.dry_run ? " [DRY]" : "";
+      const label = r.pool_name ?? `${r.pool_address.slice(0, 6)}…`;
+      const pricePct = binRangeToPricePct(r.bin_step, r.lower_bin, r.upper_bin);
+      const rangeNote =
+        pricePct != null
+          ? `${r.upper_bin - r.lower_bin} bins ≈ ±${pricePct.toFixed(1)}% of price`
+          : `${r.upper_bin - r.lower_bin} bins (step unknown)`;
+      const posNote = activeBinPosition(r.active_bin, r.lower_bin, r.upper_bin);
+      const strategyGloss = explainStrategy(r.strategy);
+      const signals: string[] = [];
+      if (r.fee_tvl_ratio != null) signals.push(`fee/TVL ${(r.fee_tvl_ratio * 100).toFixed(2)}%`);
+      if (r.volatility != null) signals.push(`vol ${r.volatility.toFixed(2)}`);
+      if (r.organic_score != null) signals.push(`organic ${r.organic_score.toFixed(2)}`);
+      const signalLine = signals.length ? `signals: ${signals.join("  ")}\n` : "";
+      const posShort = `${r.position_address.slice(0, 8)}…${r.position_address.slice(-4)}`;
       await sendMessage(
         `✅ Deployed${dryTag}\n` +
-          `pool: ${r.pool_address}\n` +
-          `strategy: ${r.strategy} bins=${r.lower_bin}..${r.upper_bin} active=${r.active_bin}\n` +
+          `${label}\n` +
           `amount: ${r.amount_sol} SOL\n` +
+          `strategy: ${strategyGloss}\n` +
+          `range: bins ${r.lower_bin}..${r.upper_bin} (${rangeNote})\n` +
+          `price: ${posNote} of range (active=${r.active_bin})\n` +
+          signalLine +
+          `pos: ${posShort}\n` +
           `${meteoraPoolUrl(r.pool_address)}\n` +
           `tx: ${r.tx ?? "(none)"}`,
       );
     },
     async notifyClose(r: CloseResult) {
       const dryTag = r.dry_run ? " [DRY]" : "";
+      const pnl = r.final_pnl_pct;
+      const pnlEmoji = pnl == null ? "📤" : pnl > 0 ? "🟢" : pnl < 0 ? "🔴" : "⚪";
+      const pnlStr = pnl == null ? "n/a" : `${pnl >= 0 ? "+" : ""}${fmtPct(pnl)}%`;
+      const peak =
+        r.peak_pnl_pct != null && r.peak_pnl_pct !== pnl
+          ? ` (peak ${r.peak_pnl_pct >= 0 ? "+" : ""}${fmtPct(r.peak_pnl_pct)}%)`
+          : "";
+      const value = r.final_value_usd != null ? fmtDollar(r.final_value_usd) : "n/a";
+      const fees = fmtDollar(r.fees_earned_usd);
+      const deposit = r.amount_sol_initial != null ? `${r.amount_sol_initial} SOL` : "n/a";
+      const age = r.age_minutes != null ? humanDuration(r.age_minutes) : "n/a";
+      const pairLine = r.pair ? `${r.pair}\n` : "";
+      const posShort = `${r.position_address.slice(0, 8)}…${r.position_address.slice(-4)}`;
       await sendMessage(
-        `📤 Closed${dryTag}\n` +
-          `position: ${r.position_address}\n` +
-          `pnl: ${r.final_pnl_pct ?? "?"}%\n` +
-          `fees: $${r.fees_earned_usd}\n` +
+        `${pnlEmoji} Closed${dryTag}\n` +
+          pairLine +
+          `pnl: ${pnlStr}${peak}\n` +
+          `value: ${value}  fees: ${fees}\n` +
+          `deposit: ${deposit}  held: ${age}\n` +
           `reason: ${r.reason}\n` +
+          `pos: ${posShort}\n` +
           `${r.pool_address ? `${meteoraPoolUrl(r.pool_address)}\n` : ""}` +
           `tx: ${r.tx ?? "(none)"}`,
       );
@@ -249,6 +287,36 @@ export function createTelegramNotifier(opts: TelegramNotifierOptions): Notifier 
     },
     startLive,
   };
+}
+
+// Adaptive precision — small numbers (< $1 or < 1%) show more decimals so
+// $0.0031 doesn't render as "$0.00" and 0.03% doesn't collapse to "0.00%".
+function fmtUsd(n: number): string {
+  const abs = Math.abs(n);
+  if (abs === 0) return "0.00";
+  if (abs < 0.01) return n.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+  if (abs < 1) return n.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  return n.toFixed(2);
+}
+function fmtDollar(n: number): string {
+  return n < 0 ? `-$${fmtUsd(-n)}` : `$${fmtUsd(n)}`;
+}
+function fmtPct(n: number): string {
+  const abs = Math.abs(n);
+  if (abs === 0) return "0.00";
+  if (abs < 0.01) return n.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  return n.toFixed(2);
+}
+
+function humanDuration(minutes: number): string {
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h < 24) return m > 0 ? `${h}h${m}m` : `${h}h`;
+  const d = Math.floor(h / 24);
+  const rh = h % 24;
+  return rh > 0 ? `${d}d${rh}h` : `${d}d`;
 }
 
 function summarizeArgs(args: Record<string, unknown>): string {

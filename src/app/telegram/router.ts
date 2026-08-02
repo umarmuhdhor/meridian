@@ -8,6 +8,7 @@ import { buildSystemPrompt } from "../../domain/prompt/builder.js";
 import { GENERAL_TOOLS } from "../../domain/prompt/role-tools.js";
 import { runBriefingCycle } from "../briefing/cycle.js";
 import { consolidateBaseToSol } from "../management/consolidate.js";
+import { enrichCloseResult } from "../../domain/format/enrich-close.js";
 
 export interface TelegramRouterDeps {
   ctx: AppContext;
@@ -156,12 +157,10 @@ export async function routeTelegramMessage(
         `Closing #${idx} ${target.pair} (${target.position.slice(0, 8)}…)…`,
       );
       try {
-        const result = await deps.ctx.chain.closePosition(target.position, "telegram /close");
+        const rawResult = await deps.ctx.chain.closePosition(target.position, "telegram /close");
+        const result = enrichCloseResult(rawResult, target);
         if (result.success) {
-          await deps.ctx.notifier.notify(
-            "info",
-            `✅ Closed #${idx} ${target.pair}. tx=${result.tx ?? "(n/a)"}`,
-          );
+          await deps.ctx.notifier.notifyClose(result);
           await consolidateBaseToSol(
             {
               chain: deps.ctx.chain,
@@ -215,9 +214,11 @@ export async function routeTelegramMessage(
       let fail = 0;
       for (const p of snap.positions) {
         try {
-          const result = await deps.ctx.chain.closePosition(p.position, "telegram /closeall");
+          const rawResult = await deps.ctx.chain.closePosition(p.position, "telegram /closeall");
+          const result = enrichCloseResult(rawResult, p);
           if (result.success) {
             ok += 1;
+            await deps.ctx.notifier.notifyClose(result);
             await consolidateBaseToSol(
               { chain: deps.ctx.chain, swap: deps.ctx.swap, notifier: deps.ctx.notifier, logger: deps.ctx.logger },
               result.base_mint,

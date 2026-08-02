@@ -9,6 +9,7 @@ import type { ManagementConfig } from "../../domain/schemas/config.js";
 import type { OnChainPosition, PositionsSnapshot } from "../../domain/schemas/chain.js";
 import { assessPnl } from "../../domain/rules/pnl.js";
 import { consolidateBaseToSol } from "./consolidate.js";
+import { enrichCloseResult } from "../../domain/format/enrich-close.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_CONFIRM_DELAY_MS = 15_000;
@@ -181,7 +182,10 @@ export function createPnlPoller(deps: PnlPollerDeps): PnlPollerHandle {
           deps.logger.warn("pnl-poller", `trailing-TP confirmed close for ${a.positionAddress.slice(0, 8)}…`, {
             reason: a.reason,
           });
-          const result = await deps.chain.closePosition(a.positionAddress, a.reason);
+          const preClose = withPeak.positions.find((p) => p.position === a.positionAddress);
+          const rawResult = await deps.chain.closePosition(a.positionAddress, a.reason);
+          const peak = (preClose as { _peakPnlPct?: number | null } | undefined)?._peakPnlPct ?? null;
+          const result = enrichCloseResult(rawResult, preClose, peak);
           if (result.success) {
             await deps.notifier.notifyClose(result);
             // Sell the withdrawn base token back to SOL (never throws).

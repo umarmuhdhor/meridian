@@ -40,7 +40,7 @@ export const deployPositionTool = defineTool({
   safety: [poolCooldownGate, tokenBlacklistGate, deployerBlocklistGate, walletBalanceGate, maxPositionsGate],
   post: [trackDeployedPosition(), notifyDeployHook, logDeployDecision("SCREENER")],
   execute: async (args, ctx) => {
-    return ctx.chain.deployPosition({
+    const raw = await ctx.chain.deployPosition({
       pool_address: args.pool_address,
       amount_sol: args.amount_sol,
       strategy: args.strategy,
@@ -52,5 +52,16 @@ export const deployPositionTool = defineTool({
       ...(args.fee_tvl_ratio !== undefined ? { fee_tvl_ratio: args.fee_tvl_ratio } : {}),
       ...(args.organic_score !== undefined ? { organic_score: args.organic_score } : {}),
     });
+    // Preserve the screener's context (pool name, base mint, quality signals)
+    // in the result so notify/log consumers can render human-useful output
+    // without a second lookup.
+    return {
+      ...raw,
+      pool_name: args.pool_name ?? raw.pool_name ?? null,
+      base_mint: args.base_mint ?? raw.base_mint ?? null,
+      volatility: args.volatility ?? null,
+      fee_tvl_ratio: args.fee_tvl_ratio ?? null,
+      organic_score: args.organic_score ?? null,
+    };
   },
 });
