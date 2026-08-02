@@ -70,9 +70,27 @@ TELEGRAM_CHAT_ID=-1004388814457             # unchanged, same group
 `user-config.json`: `deployAmountSol=0.2`, `maxPositions=3`, chain=meteora. Backups on
 disk: `~/meridian/.env.bak-sagebot-*` (pre-token-swap Calisto config). SAGE_CF_ACCESS_*
 no longer needed (intra-host path).
-`user-config.json`: `deployAmountSol=0.2`, `maxPositions=3`, chain=meteora.
 `meridian-bridge-proxy` is a durable **compose service** in `docker-compose.yml`
 (`network_mode: service:meridian`) so `up -d --force-recreate` re-attaches it every deploy.
+
+**Sage's Meridian toolset (9 tools, source of truth: [`hermes-meridian-plugin/`](hermes-meridian-plugin/)):**
+
+| Tool | Kind | Notes |
+|---|---|---|
+| `mrd_get_positions` / `mrd_get_summary` / `mrd_get_wallet` / `mrd_get_candidates` | read | Any time. |
+| `mrd_get_config` | read | Reads `user-config.json` via bridge `GET /state/file/user-config` (bridge uses `ctx.configPath`, not `stateDir` — 2026-08-02 fix). Secrets redacted server-side. |
+| `mrd_deploy_position` | write | Autonomous (screening cycle, `cycle_id` verbatim) OR human-requested. |
+| `mrd_close_position` | write | Human-only. **Requires `reason` string** — Zod-min:1 on Meridian side (2026-08-02 fix). |
+| `mrd_claim_fees` | write | Human-only. Meridian auto-claims via management cycle. |
+| `mrd_update_config` | write | **Human-only, HARD-GATED at the bridge**: `POST /tool` with `name=update_config` + any `cycle_id` returns 403 (`human-gated; not permitted inside a delegation cycle`). Screening delegation always carries a `cycle_id`; user chats never do. Prompt-level guardrails in the plugin schema + Meridian's Sage-delegation system prompt back this up, but the bridge is authoritative. |
+
+**Sage's `meridian-ops` skill (source of truth: [`hermes-meridian-plugin/skill/SKILL.md`](hermes-meridian-plugin/skill/SKILL.md)):**
+- Installed at `~/.hermes/profiles/sage/skills/meridian-ops/SKILL.md` on vivobook.
+- Sage's SOUL.md is intentionally NOT modified — Sage remains a research analyst by default; the skill loads on demand when Meridian topics come up (auto-invoked by keyword: "Meridian", "PnL", "stop loss", "positions", "config", "deploy", "screening cycle", …).
+- Covers: mode detection (autonomous screening vs human operator), full `mrd_*` tool inventory + when-to-call, screening cycle rules, human operator playbook by request shape, config-edit protocol, hard boundaries, memory hygiene, style, trust boundary, quick-reference cheat sheet.
+- Re-deploy: `scp deploy/hermes-meridian-plugin/skill/SKILL.md vivobook-public:~/.hermes/profiles/sage/skills/meridian-ops/SKILL.md && ssh vivobook-public 'docker exec hermes /command/s6-svc -r /run/service/gateway-sage'`.
+
+**Sage terminal PATH fix (vivobook-only, not in repo):** `gmgn-cli` and other tools installed to `~/.local/bin` weren't on the default shell PATH. Fix: `~/.hermes/profiles/sage/home/.bashrc` contains `export PATH="$HOME/.local/bin:$PATH"`. `auto_source_bashrc` is already true in Sage's `config.yaml`.
 
 **Sage (vivobook)** — `~/.hermes/profiles/sage/.env`:
 ```

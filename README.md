@@ -35,8 +35,17 @@ rollback (`git checkout legacy-js`).
   confirm before firing a close.
 - **Learns from performance** — records structured lessons and shared learning
   via HiveMind, evolves screening thresholds based on closed position history.
-- **Telegram REPL** — full inbound long-poll + outbound live-message notifier
-  with in-place edits, plus deploy/close/OOR alerts and daily briefings.
+- **Telegram REPL** — in production, screening + conversational control is
+  delegated to **Sage** (Hermes agent, memory-backed) via the intra-host bridge
+  (see `deploy/SAGE-MERIDIAN-ROLLOUT.md`). Meridian keeps outbound cards
+  (deploy/close/OOR alerts, daily briefings) posted from the same @SageHermesAnd_bot
+  identity; Sage handles all inbound. Standalone Meridian mode still supports its
+  own inbound long-poll REPL when `MERIDIAN_TELEGRAM_INBOUND` is unset.
+- **Sage `meridian-ops` skill** — Sage's operational knowledge (mode detection,
+  `mrd_*` tool inventory, playbooks, config-edit protocol, boundaries) lives in
+  `deploy/hermes-meridian-plugin/skill/SKILL.md` and installs to Sage as a
+  Hermes skill. `mrd_update_config` is human-gated at the bridge (`cycle_id`
+  present ⇒ 403), so Sage cannot patch config autonomously.
 - **Discord signals** — optional Discord listener queues LP Army channel calls
   for screening (retained from legacy — separate subproject).
 

@@ -240,8 +240,12 @@ Every failure is a discriminated `ToolError`, never a throw.
   `maxPositionsGate` (uses `force:true`), `tokenBlacklistGate`, `deployerBlocklistGate`
   (**fails OPEN** on enrichment error; the other four fail closed).
 - **Post hooks** (`tools/post/*`): `notify.*` (Telegram cards, guarded on
-  `result.success`) and `log-decision.*` (append to decision log). **Post-hook failures
-  are swallowed + logged, never fail the tool.**
+  `result.success`), `log-decision.*` (append to decision log — plain-English
+  summary + reason since 2026-08-02, see `domain/format/decision-strings.ts`),
+  `consolidate.ts` (auto-swap base → SOL after close), `track-position.ts` (upsert
+  tracked position on deploy), and `mark-closed.ts` (flip repo `closed:true` on
+  close — added 2026-08-02 to stop state.json ghost-open accumulation).
+  **Post-hook failures are swallowed + logged, never fail the tool.**
 
 ---
 
@@ -279,11 +283,19 @@ The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
      [`deploy/SAGE-MERIDIAN-ROLLOUT.md`](deploy/SAGE-MERIDIAN-ROLLOUT.md).
 
 ### Management cycle (fully deterministic — no LLM)
-1. `getMyPositions({force:true})`; `planForPosition` per position:
-   deterministic close rule → else CLAIM if `unclaimed_fees_usd >= minClaimAmount`
-   → else STAY.
-2. If **all STAY → `{kind:"all_stay"}`**.
-3. Else iterate non-STAY actions sequentially, invoke `close_position` /
+1. `getMyPositions({force:true})`.
+2. **Forward reconcile**: any on-chain position missing from state.json → upsert
+   into tracking store (deploy_position hook missed it, or was deployed pre-fix).
+3. **Reverse reconcile** (added 2026-08-02): any tracked position marked open but
+   NOT in the on-chain snap → flip `closed:true, closed_at:now` and note
+   "reconciled: no longer on-chain". Catches historical ghost records + external
+   closes (pnl-poller direct chain call, Meteora UI, ad-hoc script). Without this,
+   `buildStateSummary` reports stale open counts (e.g. dashboard summary showed
+   36 records vs 0 on-chain before the fix).
+4. `planForPosition` per position: deterministic close rule → else CLAIM if
+   `unclaimed_fees_usd >= minClaimAmount` → else STAY.
+5. If **all STAY → `{kind:"all_stay"}`**.
+6. Else iterate non-STAY actions sequentially, invoke `close_position` /
    `claim_fees` **directly via `executeTool`** (safety gates + post-hooks + notify
    card + decision log + auto-swap still fire). Returns `{kind:"executed", results}`.
    No LLM: zero token cost, no latency, no once-per-session cap on closes-per-tick

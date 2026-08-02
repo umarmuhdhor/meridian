@@ -8,14 +8,17 @@ the vivobook at `~/.hermes/profiles/sage/plugins/meridian/`.
 ## Files
 - `plugin.yaml` — manifest (`kind: backend`, 9 `provides_tools`).
 - `__init__.py` — `register(ctx)`; registers the 9 tools into the `meridian` toolset. **Relative imports** (`from .tools`) — required for user-dir plugins.
-- `tools.py` — tool schemas + handlers. Reads: `mrd_get_positions/summary/wallet/candidates/config`. Writes (`confirm:true`): `mrd_deploy_position` (carries `cycle_id`), `mrd_close_position`, `mrd_claim_fees`, `mrd_update_config` (flat-key patch, live-reloaded).
+- `tools.py` — tool schemas + handlers. Reads: `mrd_get_positions/summary/wallet/candidates/config`. Writes (`confirm:true`): `mrd_deploy_position` (carries `cycle_id`), `mrd_close_position` (**requires `reason` string** — Zod-min:1 on Meridian side), `mrd_claim_fees`, `mrd_update_config` (flat-key patch, live-reloaded, human-gated at the bridge).
 - `client.py` — stdlib (urllib) HTTP client to the bridge. Sends Bearer + explicit User-Agent. Post-migration (2026-08-02) the bridge is intra-host; `MERIDIAN_BRIDGE_CF_CLIENT_ID/SECRET` are unused (kept in client for compat but leave unset). Reads `MERIDIAN_BRIDGE_URL/TOKEN`.
 - `test_client.py` — local client tests (`python3 test_client.py`, no Hermes runtime needed).
+- `skill/SKILL.md` — Sage's `meridian-ops` operational knowledge skill (mode detection, tool inventory, playbooks, boundaries). Deployed to `~/.hermes/profiles/sage/skills/meridian-ops/SKILL.md`. **Sage's SOUL.md is intentionally NOT modified — this skill loads on demand.**
 
 ## Install / update (vivobook)
 ```
 scp deploy/hermes-meridian-plugin/{plugin.yaml,__init__.py,client.py,tools.py} \
   vivobook-public:~/.hermes/profiles/sage/plugins/meridian/
+scp deploy/hermes-meridian-plugin/skill/SKILL.md \
+  vivobook-public:~/.hermes/profiles/sage/skills/meridian-ops/SKILL.md
 docker exec hermes /command/s6-svc -r /run/service/gateway-sage   # reload sage only
 ```
 Requires in `sage/config.yaml`: `toolsets: [hermes-cli, meridian]` and `plugins: { enabled: [meridian] }`.
@@ -42,5 +45,6 @@ curl -sSf -H "Authorization: Bearer $MERIDIAN_BRIDGE_TOKEN" \
 ```
 
 ## Notes
-- Writes go through the bridge `/tool` path → all of Meridian's safety gates + post-hooks (decision log + Telegram card) still fire.
+- Writes go through the bridge `/tool` path → all of Meridian's safety gates + post-hooks (decision log + Telegram card + auto-swap + repo mark-closed) still fire.
+- `mrd_update_config` is **hard-gated at the bridge**: `POST /tool` with `name=update_config` + any `cycle_id` → 403 (`human-gated`). Screening delegations always carry `cycle_id`; user chats never do. The plugin schema's description reinforces this ("only when the human user in the CURRENT conversation has EXPLICITLY asked"), but the code gate is authoritative — do not rely on prompt alone.
 - Historical (Tencent-era CF-tunneled) architecture + design rationale: [`../SAGE-MERIDIAN-ROLLOUT.md`](../SAGE-MERIDIAN-ROLLOUT.md).

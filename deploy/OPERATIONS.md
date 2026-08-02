@@ -317,6 +317,10 @@ should be `302` (redirect into Access).
 | Sage silent in Telegram group | Check `allowed_chats` in `~/.hermes/profiles/sage/config.yaml` + BotFather `/setprivacy`. Confirm hermes is up. |
 | No deploy/close cards posting | Meridian's `TELEGRAM_BOT_TOKEN` must equal Sage's (`~/.hermes/profiles/sage/.env`). Verify: `docker exec meridian env \| grep TELEGRAM_BOT_TOKEN`. |
 | Duplicate replies / bot `getUpdates` 409 in logs | Two processes polling same token. `MERIDIAN_TELEGRAM_INBOUND` must be `false` (only Hermes polls). |
+| `mrd_close_position` fails via Sage; Sage says "close via direct bridge fallback" | Plugin `mrd_close_position` schema must declare `reason` as required (Meridian `close_position` tool Zod-rejects without it). Fixed 2026-08-02. Ensure `~/.hermes/profiles/sage/plugins/meridian/tools.py` matches the repo copy at `deploy/hermes-meridian-plugin/tools.py`. |
+| Dashboard summary shows stale "open" positions (much higher than on-chain) | state.json ghost accumulation — position-repo wasn't flipped on close. Fixed 2026-08-02: `markClosedInRepoHook` on `close_position` + reverse reconciler in management cycle. Existing ghosts auto-flip on the next management tick (~10 min). |
+| Sage's terminal can't find `gmgn-cli` (or any tool in `~/.local/bin`) | Sage's HOME resolves to `/opt/data/profiles/sage/home` but `~/.local/bin` isn't on the default PATH. Fix on vivobook: `echo 'export PATH="$HOME/.local/bin:$PATH"' > ~/.hermes/profiles/sage/home/.bashrc` (auto_source_bashrc is on in Sage's config.yaml, so future shells pick it up). |
+| Sage doesn't know how to operate Meridian | The `meridian-ops` skill must be installed at `~/.hermes/profiles/sage/skills/meridian-ops/SKILL.md` (source of truth: `deploy/hermes-meridian-plugin/skill/SKILL.md`). Verify with `ls ~/.hermes/profiles/sage/skills/meridian-ops/`; scp + `s6-svc -r gateway-sage` if missing. Sage's SOUL.md is intentionally untouched — the skill loads on demand when Meridian topics come up. |
 
 ---
 
