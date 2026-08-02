@@ -71,16 +71,87 @@ interface TopCandidatesResult {
   rejected_details: string[];
 }
 
-function formatCandidatesBlock(picked: TopCandidatesResult["picked"]): string {
+interface Diligence {
+  rug?: { score: number; top10_pct: number; passes: boolean; reason: string | null };
+  holders?: { count: number; top10_pct: number; bot_pct: number };
+  error?: string;
+}
+
+/**
+ * Pre-enrich each candidate with fresh diligence data (rug + holder concentration)
+ * so Sage's autonomous cycle has everything it needs inline — no extra tool calls,
+ * no timeout risk from serial GMGN-style lookups. Parallel fetch per candidate,
+ * fails open (a missing/failed lookup drops that line, does NOT block the cycle).
+ * Budgeted at ~3s per candidate via Promise.race with a timeout.
+ */
+async function enrichCandidates(
+  picked: TopCandidatesResult["picked"],
+  ctx: AppContext,
+  perCallTimeoutMs = 3000,
+): Promise<Diligence[]> {
+  const timeout = <T,>(p: Promise<T>): Promise<T | null> =>
+    Promise.race([
+      p,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), perCallTimeoutMs)),
+    ]);
+
+  return Promise.all(
+    picked.map(async (p): Promise<Diligence> => {
+      const mint = p.pool.base_mint;
+      if (!mint) return {};
+      try {
+        const [rug, holders] = await Promise.all([
+          timeout(ctx.market.rugCheck.check(mint)).catch(() => null),
+          timeout(ctx.market.tokenInfo.getHolders(mint, 10)).catch(() => null),
+        ]);
+        const out: Diligence = {};
+        if (rug)
+          out.rug = {
+            score: rug.score,
+            top10_pct: rug.top10_pct,
+            passes: rug.passes,
+            reason: rug.reason,
+          };
+        if (holders)
+          out.holders = {
+            count: holders.count,
+            top10_pct: holders.top10_pct,
+            bot_pct: holders.bot_pct,
+          };
+        return out;
+      } catch (e) {
+        return { error: (e as Error).message ?? String(e) };
+      }
+    }),
+  );
+}
+
+function formatCandidatesBlock(
+  picked: TopCandidatesResult["picked"],
+  diligence?: readonly Diligence[],
+): string {
   if (!picked.length) return "  (no candidates passed)";
   return picked
     .map((p, i) => {
       const feeTvl = p.pool.fee_active_tvl_ratio ?? p.pool.fee_tvl_ratio ?? 0;
       const vol = p.pool.volume_window;
-      // FULL pool_address — the screener passes this verbatim to get_active_bin /
-      // deploy_position. Truncating it (slice(0,8)+"...") fed the model an invalid
-      // base58 string → "Invalid public key input" every cycle → never deployed.
-      return `  [${i + 1}] ${p.pool.name}  pool=${p.pool.pool_address}  score=${p.score.toFixed(0)}  fee/aTVL=${(feeTvl * 100).toFixed(2)}%  vol=$${vol.toFixed(0)}  organic=${p.pool.organic_score ?? "?"}`;
+      const base = `  [${i + 1}] ${p.pool.name}  pool=${p.pool.pool_address}  score=${p.score.toFixed(0)}  fee/aTVL=${(feeTvl * 100).toFixed(2)}%  vol=$${vol.toFixed(0)}  organic=${p.pool.organic_score ?? "?"}`;
+      const d = diligence?.[i];
+      if (!d) return base;
+      const parts: string[] = [];
+      if (d.rug) {
+        parts.push(
+          `rug_score=${d.rug.score.toFixed(0)}${d.rug.passes ? "" : " FAIL"}${d.rug.reason ? ` (${d.rug.reason})` : ""}`,
+        );
+      }
+      if (d.holders) {
+        parts.push(
+          `holders=${d.holders.count}  top10=${d.holders.top10_pct.toFixed(1)}%  bots=${d.holders.bot_pct.toFixed(1)}%`,
+        );
+      }
+      if (d.error) parts.push(`diligence_error=${d.error}`);
+      if (!parts.length) return base;
+      return `${base}\n       diligence: ${parts.join("  ")}`;
     })
     .join("\n");
 }
@@ -209,11 +280,18 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     recentDecisions,
   });
 
+  // Pre-fetch fresh diligence (rug + holder concentration) for the shortlist so
+  // deciders don't need to make extra tool calls to verify. Sage in autonomous mode
+  // can't safely fan out into gmgn-cli / rugcheck (90s timeout, prompt forbids it),
+  // and repeated "vetoed 2x, need GMGN-confirmed improvement" no-deploys were the
+  // symptom. Pool memory/history changes minute-to-minute — always fresh, never cached.
+  const diligence = await enrichCandidates(picked, ctx);
+
   const goal = [
     "SCREENING CYCLE — pick one of the following candidates and call deploy_position, or explain why none qualify.",
     "",
-    "CANDIDATES:",
-    formatCandidatesBlock(picked),
+    "CANDIDATES (fresh diligence included — do NOT fetch more):",
+    formatCandidatesBlock(picked, diligence),
     "",
     `Deploy amount: ${ctx.config.management.deployAmountSol} SOL. Strategy: ${ctx.config.strategy.strategy}.`,
     `bins_below floor: ${ctx.config.strategy.minBinsBelow}. Default: ${ctx.config.strategy.defaultBinsBelow}.`,
@@ -288,25 +366,29 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     // ranked candidates directly and one job: deploy the chosen one via mrd_deploy_position.
     const sageSystemPrompt = [
       "You are Meridian's DLMM screening decider. You are given PRE-FILTERED, RANKED pool",
-      "candidates — do NOT discover, verify, or re-rank them.",
+      "candidates with FRESH DILIGENCE inline (rug_score, holders count, top10 concentration,",
+      "bot share). This is your GMGN-equivalent verification — do NOT go fetch more.",
       "Pick the single best candidate to deploy into, or none.",
       "To deploy, call mrd_deploy_position EXACTLY ONCE with: pool_address (from the chosen",
       "candidate), pool_name (the human-readable name from the candidate line, e.g. \"BONK-SOL\"),",
       "amount_sol, strategy, bins_below (all given below), bins_above=0, and",
       "cycle_id (verbatim from the task). Passing pool_name is REQUIRED — decision-log",
       "cards read address prefixes as gibberish; pool_name is what shows up in the dashboard.",
-      "Do NOT call mrd_get_candidates, mrd_get_positions, mrd_get_wallet, or any other tool —",
-      "everything you need is in this message.",
+      "Do NOT call mrd_get_candidates, mrd_get_positions, mrd_get_wallet, gmgn-cli, or any",
+      "other diligence tool — the diligence data is already in the candidate block.",
       "ABSOLUTELY DO NOT call mrd_update_config in this session. Config changes are",
       "human-gated and only permitted when the human user explicitly asks in a chat —",
       "which is NOT this session. This is an autonomous screening cycle, not a user request.",
+      "Use your memory of prior vetoes freely — the inline diligence is the fresh signal",
+      "that can justify overriding a stale veto (e.g. if a token you vetoed 2 hours ago now",
+      "shows improved rug_score / holders / top10 concentration, deploying is defensible).",
       "If none qualify, reply exactly: NO DEPLOY: <reason>.",
     ].join("\n");
     const sageGoal = [
       "SCREENING CYCLE — choose one candidate and call mrd_deploy_position, or NO DEPLOY.",
       "",
-      "CANDIDATES:",
-      formatCandidatesBlock(picked),
+      "CANDIDATES (fresh diligence included — do NOT fetch more):",
+      formatCandidatesBlock(picked, diligence),
       "",
       `amount_sol: ${ctx.config.management.deployAmountSol}. strategy: ${ctx.config.strategy.strategy}. bins_below: ${ctx.config.strategy.defaultBinsBelow} (floor ${ctx.config.strategy.minBinsBelow}). bins_above: 0.`,
     ].join("\n");

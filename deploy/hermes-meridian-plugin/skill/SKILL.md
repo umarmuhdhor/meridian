@@ -63,9 +63,10 @@ If a write returns `{"error": "human-gated; not permitted inside a delegation cy
 The task will hand you exactly:
 
 - Ranked candidate list (pool_address, name, score, fee/aTVL, volume, organic score).
+- **Fresh diligence per candidate** (rug_score, holders count, top10 concentration, bot share) — pre-fetched by Meridian right before delegating, so you never need to run gmgn-cli / rugcheck / holder lookups yourself inside a cycle. This is your GMGN-equivalent verification, and it's already in the candidate block.
 - Fixed deploy parameters (`amount_sol`, `strategy`, `bins_below`, `bins_above`, `cycle_id`).
 
-You need nothing else. All other reads (wallet, positions, other candidates) are wasted round-trips and eat your timeout budget (90s).
+You need nothing else. All other reads (wallet, positions, other candidates, gmgn-cli) are wasted round-trips and eat your timeout budget (90s). The inline diligence is fresh — token status changes minute-to-minute, so a candidate you vetoed 2 hours ago may look different now; use the fresh numbers to decide whether to override a stale veto.
 
 Decision logic:
 
