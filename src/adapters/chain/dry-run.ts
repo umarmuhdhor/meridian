@@ -136,6 +136,7 @@ export function createDryRunChainClient(opts: DryRunOptions): DryRunChainClient 
         amount_sol: args.amount_sol,
         tx: nextTx(),
         dry_run: true,
+        ...(args.bin_step !== undefined ? { bin_step: args.bin_step } : {}),
       };
     },
 

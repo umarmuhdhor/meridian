@@ -194,3 +194,63 @@ export function summarizeRejections(
     .slice(0, limit)
     .map(([kind, n]) => `${kind} (${n})`);
 }
+
+/**
+ * Turn a single `RejectionReason` into a plain-English clause, with numeric context
+ * inlined so the reader doesn't need to look up thresholds.
+ */
+export function formatRejectionReasonHuman(reason: RejectionReason): string {
+  switch (reason.kind) {
+    case "tvl_out_of_range":
+      return `TVL $${reason.value.toFixed(0)} outside allowed range $${reason.min.toFixed(0)}–$${reason.max.toFixed(0)}`;
+    case "volume_below_min":
+      return `volume $${reason.value.toFixed(0)} below $${reason.min.toFixed(0)} min`;
+    case "organic_below_min":
+      return `organic score ${reason.value.toFixed(2)} below ${reason.min.toFixed(2)} min`;
+    case "holders_below_min":
+      return `only ${reason.value} holders (need ≥ ${reason.min})`;
+    case "mcap_out_of_range":
+      return `market cap $${reason.value.toFixed(0)} outside $${reason.min.toFixed(0)}–$${reason.max.toFixed(0)}`;
+    case "bin_step_out_of_range":
+      return `bin step ${reason.value} outside allowed ${reason.min}–${reason.max}`;
+    case "fee_tvl_below_min":
+      return `fee/TVL ${(reason.value * 100).toFixed(2)}% below ${(reason.min * 100).toFixed(2)}% min (pool not earning enough)`;
+    case "launchpad_blocked":
+      return `launchpad "${reason.value}" is on the blocklist`;
+    case "launchpad_not_allowed":
+      return `launchpad "${reason.value || "unknown"}" not in allowlist [${reason.allowed.join(", ") || "none"}]`;
+    case "token_age_out_of_range": {
+      const parts: string[] = [];
+      if (reason.min != null) parts.push(`min ${reason.min}h`);
+      if (reason.max != null) parts.push(`max ${reason.max}h`);
+      return `token age ${reason.value.toFixed(1)}h outside allowed (${parts.join(", ") || "unbounded"})`;
+    }
+    case "on_pool_cooldown":
+      return "pool is on cooldown (recently deployed to / recently lost on)";
+    case "on_base_mint_cooldown":
+      return "base token is on cooldown (recently traded)";
+    case "base_mint_blacklisted":
+      return "base token is blacklisted";
+    case "base_mint_already_in_use":
+      return "already holding a position in this token";
+    case "bot_holders_pct_too_high":
+      return `bot holder share ${reason.value.toFixed(1)}% above ${reason.max.toFixed(1)}% max`;
+    case "top10_pct_too_high":
+      return `top-10 wallet concentration ${reason.value.toFixed(1)}% above ${reason.max.toFixed(1)}% max`;
+  }
+}
+
+/**
+ * Per-token rejection lines — "BONK/SOL — already holding a position in this token".
+ * One line per rejected pool, capped at `limit` (the rest are dropped; the caller can
+ * still show the aggregate count from `summarizeRejections`).
+ */
+export function detailRejections(
+  rejected: FilterResult["rejected"],
+  limit = 12,
+): string[] {
+  return rejected.slice(0, limit).map((r) => {
+    const name = r.pool.name || `${r.pool.pool_address.slice(0, 6)}…`;
+    return `${name} — ${formatRejectionReasonHuman(r.reason)}`;
+  });
+}

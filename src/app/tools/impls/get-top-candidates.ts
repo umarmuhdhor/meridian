@@ -3,6 +3,7 @@ import { defineTool } from "../define-tool.js";
 import { CandidatePoolSchema } from "../../../domain/schemas/market.js";
 import {
   defaultThresholds,
+  detailRejections,
   hardFilter,
   rankCandidates,
   summarizeRejections,
@@ -30,6 +31,7 @@ export const getTopCandidatesTool = defineTool({
     passed: z.number().int().nonnegative(),
     rejected: z.number().int().nonnegative(),
     rejection_summary: z.array(z.string()),
+    rejected_details: z.array(z.string()),
   }),
   execute: async ({ limit, discover_limit }, ctx) => {
     const rawPools = await ctx.market.pools.discover({ limit: discover_limit });
@@ -67,6 +69,7 @@ export const getTopCandidatesTool = defineTool({
       passed: passed.length,
       rejected: rejected.length,
       rejection_summary: summarizeRejections(rejected),
+      rejected_details: detailRejections(rejected),
     };
   },
 });

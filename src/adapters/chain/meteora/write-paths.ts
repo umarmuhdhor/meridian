@@ -314,6 +314,7 @@ export function createMeteoraWriteHelpers(deps: WritePathsDeps): MeteoraWriteHel
       amount_sol: plan.amountY,
       tx: txHashes[0] ?? null,
       dry_run: false,
+      ...(binStep && binStep > 0 ? { bin_step: binStep } : {}),
     };
   }
 

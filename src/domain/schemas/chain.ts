@@ -66,6 +66,7 @@ export const DeployResultSchema = z.object({
   amount_sol: z.number(),
   tx: z.string().nullable(),
   dry_run: z.boolean().default(false),
+  bin_step: z.number().int().positive().optional(),
 });
 export type DeployResult = z.infer<typeof DeployResultSchema>;
 

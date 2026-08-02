@@ -8,6 +8,11 @@ import { buildSystemPrompt } from "../../domain/prompt/builder.js";
 import { SCREENER_TOOLS } from "../../domain/prompt/role-tools.js";
 import { sanitizeDecisionText } from "../../domain/schemas/decision.js";
 import type { CandidatePool } from "../../domain/schemas/market.js";
+import {
+  formatInsufficientSolReason,
+  formatMaxPositionsReason,
+  formatNoCandidatesReason,
+} from "../../domain/format/decision-strings.js";
 
 export interface ScreeningCycleDeps {
   ctx: AppContext;
@@ -63,6 +68,7 @@ interface TopCandidatesResult {
   passed: number;
   rejected: number;
   rejection_summary: string[];
+  rejected_details: string[];
 }
 
 function formatCandidatesBlock(picked: TopCandidatesResult["picked"]): string {
@@ -98,7 +104,11 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
   ]);
 
   if (positionsSnap.total_positions >= ctx.config.risk.maxPositions) {
-    const reason = `at max positions (${positionsSnap.total_positions}/${ctx.config.risk.maxPositions})`;
+    const shortReason = `at max positions (${positionsSnap.total_positions}/${ctx.config.risk.maxPositions})`;
+    const humanReason = formatMaxPositionsReason(
+      positionsSnap.total_positions,
+      ctx.config.risk.maxPositions,
+    );
     await ctx.repos.decisions.append({
       id: nextDecisionId(ctx.clock.now()),
       ts: ctx.clock.now().toISOString(),
@@ -106,19 +116,27 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       actor: "SCREENER",
       pool: null,
       pool_name: null,
-      summary: sanitizeDecisionText(`Screening skipped: ${reason}`),
-      reason: sanitizeDecisionText(reason, 500),
+      summary: sanitizeDecisionText(
+        `Screening paused — position cap reached (${positionsSnap.total_positions}/${ctx.config.risk.maxPositions})`,
+      ),
+      reason: sanitizeDecisionText(humanReason, 500),
       risks: [],
       metrics: { total_positions: positionsSnap.total_positions, max: ctx.config.risk.maxPositions },
       rejected: [],
     });
-    ctx.logger.info("screening", `skipped — ${reason}`);
-    return { kind: "skipped", reason };
+    ctx.logger.info("screening", `skipped — ${shortReason}`);
+    return { kind: "skipped", reason: shortReason };
   }
 
   const need = ctx.config.management.deployAmountSol + ctx.config.management.gasReserve;
   if (wallet.sol < need) {
-    const reason = `insufficient SOL: ${wallet.sol.toFixed(4)} < ${need.toFixed(4)}`;
+    const shortReason = `insufficient SOL: ${wallet.sol.toFixed(4)} < ${need.toFixed(4)}`;
+    const humanReason = formatInsufficientSolReason(
+      wallet.sol,
+      need,
+      ctx.config.management.deployAmountSol,
+      ctx.config.management.gasReserve,
+    );
     await ctx.repos.decisions.append({
       id: nextDecisionId(ctx.clock.now()),
       ts: ctx.clock.now().toISOString(),
@@ -126,14 +144,14 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       actor: "SCREENER",
       pool: null,
       pool_name: null,
-      summary: sanitizeDecisionText(`Screening skipped: ${reason}`),
-      reason: sanitizeDecisionText(reason, 500),
+      summary: sanitizeDecisionText(`Screening paused — wallet SOL below deploy threshold`),
+      reason: sanitizeDecisionText(humanReason, 500),
       risks: [],
       metrics: { sol: wallet.sol, need },
       rejected: [],
     });
-    ctx.logger.info("screening", `skipped — ${reason}`);
-    return { kind: "skipped", reason };
+    ctx.logger.info("screening", `skipped — ${shortReason}`);
+    return { kind: "skipped", reason: shortReason };
   }
 
   // Run pipeline
@@ -147,10 +165,17 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     ctx.logger.error("screening", message);
     return { kind: "skipped", reason: message };
   }
-  const picked = (candidates.value as TopCandidatesResult).picked;
-  const rejSummary = (candidates.value as TopCandidatesResult).rejection_summary;
+  const candResult = candidates.value as TopCandidatesResult;
+  const picked = candResult.picked;
+  const rejSummary = candResult.rejection_summary;
+  const rejDetails = candResult.rejected_details ?? [];
 
   if (picked.length === 0) {
+    const humanReason = formatNoCandidatesReason(
+      candResult.scanned,
+      candResult.rejected,
+      rejDetails,
+    );
     await ctx.repos.decisions.append({
       id: nextDecisionId(ctx.clock.now()),
       ts: ctx.clock.now().toISOString(),
@@ -158,15 +183,17 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       actor: "SCREENER",
       pool: null,
       pool_name: null,
-      summary: sanitizeDecisionText("Screening produced 0 eligible candidates"),
-      reason: sanitizeDecisionText(rejSummary.slice(0, 3).join(", "), 500),
+      summary: sanitizeDecisionText(
+        `No pools qualified — reviewed ${candResult.scanned}, all ${candResult.rejected} failed hard filters`,
+      ),
+      reason: sanitizeDecisionText(humanReason, 500),
       risks: [],
       metrics: {
-        scanned: (candidates.value as TopCandidatesResult).scanned,
+        scanned: candResult.scanned,
         passed: 0,
-        rejected: (candidates.value as TopCandidatesResult).rejected,
+        rejected: candResult.rejected,
       },
-      rejected: rejSummary,
+      rejected: rejDetails.length ? rejDetails : rejSummary,
     });
     ctx.logger.info("screening", `no_deploy — ${rejSummary.slice(0, 3).join(", ")}`);
     return { kind: "no_deploy", picked: 0, rejection_summary: rejSummary };
@@ -227,9 +254,21 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     // deploy already logs via the tool's post-hook.
     const deployed = agent.toolCalls.some((t) => t.name === "deploy_position" && t.ok);
     if (!deployed) {
+      const topPicks = picked
+        .slice(0, 3)
+        .map((p) => `${p.pool.name} (score ${p.score.toFixed(0)})`)
+        .join(", ");
+      const rationale = agent.text.trim();
+      const reason = [
+        `Local LLM reviewed ${picked.length} ranked candidate${picked.length === 1 ? "" : "s"} and declined to open a position.`,
+        topPicks ? `Top options: ${topPicks}.` : "",
+        rationale ? `Rationale: ${rationale}` : `Loop finished without a deploy call (${agent.finishReason}).`,
+      ]
+        .filter(Boolean)
+        .join(" ");
       await appendNoDeploy(ctx, {
-        summary: `Screener reviewed ${picked.length} candidate(s), chose not to deploy`,
-        reason: agent.text.trim() || `screener finished without deploying (${agent.finishReason})`,
+        summary: `Screener passed on all ${picked.length} candidate${picked.length === 1 ? "" : "s"} this cycle`,
+        reason,
         metrics: { scanned, passed, candidates: picked.length, finish: agent.finishReason },
       });
       ctx.logger.info("screening", `no_deploy (screener declined) — finish=${agent.finishReason}`);
@@ -278,9 +317,21 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       if (deployed) {
         ctx.logger.info("screening", `sage delegated — deploy landed (cycle=${cycleId})`);
       } else {
+        const topPicks = picked
+          .slice(0, 3)
+          .map((p) => `${p.pool.name} (score ${p.score.toFixed(0)})`)
+          .join(", ");
+        const rationale = result.text.trim();
+        const reason = [
+          `Sage (Hermes agent, memory-backed) reviewed ${picked.length} ranked candidate${picked.length === 1 ? "" : "s"} and declined to deploy.`,
+          topPicks ? `Top options offered: ${topPicks}.` : "",
+          rationale ? `Sage's rationale: ${rationale}` : "No rationale returned.",
+        ]
+          .filter(Boolean)
+          .join(" ");
         await appendNoDeploy(ctx, {
-          summary: `Sage reviewed ${picked.length} candidate(s), chose not to deploy`,
-          reason: result.text || "sage declined",
+          summary: `Sage passed on all ${picked.length} candidate${picked.length === 1 ? "" : "s"} this cycle`,
+          reason,
           metrics: { scanned, passed, candidates: picked.length, decider: "sage" },
         });
         ctx.logger.info("screening", "sage delegated — no_deploy");
