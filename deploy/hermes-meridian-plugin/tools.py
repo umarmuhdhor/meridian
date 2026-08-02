@@ -195,13 +195,23 @@ def _handle_get_config(args: dict, **kw) -> str:
 MRD_UPDATE_CONFIG_SCHEMA = {
     "name": "mrd_update_config",
     "description": (
-        "Patch one or more flat keys in Meridian's user-config.json. Applies live "
-        "(no restart). Unknown keys are reported, not applied. Type coercion is "
-        "best-effort (number/boolean). Include a short `reason` so the change "
-        "shows up in the decision log with context. "
-        "Common keys: stopLossPct, takeProfitPct, trailingTriggerPct, trailingDropPct, "
-        "deployAmountSol, maxPositions, minFeeActiveTvlRatio, minVolume, minHolders, "
-        "screeningIntervalMin, managementIntervalMin, strategy, defaultBinsBelow."
+        "HUMAN-GATED CONFIG PATCH. Only call this tool when the human user in the "
+        "CURRENT conversation has EXPLICITLY asked to change a config value "
+        "(e.g. \"lower the stop loss\", \"raise deploy amount to 0.5\", \"pause "
+        "screening\"). NEVER call it autonomously — not during screening "
+        "delegation, not during scheduled runs, not as a self-improvement, and "
+        "not because you inferred a config change would help. If the user only "
+        "asked you to REVIEW / EXPLAIN the config, call mrd_get_config and stop. "
+        "\n\n"
+        "Behavior: patches one or more flat keys in Meridian's user-config.json. "
+        "Applies live (no restart). Unknown keys are reported, not applied. Type "
+        "coercion is best-effort (number/boolean). Include a short `reason` "
+        "quoting the user's request so the decision log has context. "
+        "\n\n"
+        "Common keys: stopLossPct, takeProfitPct, trailingTriggerPct, "
+        "trailingDropPct, deployAmountSol, maxPositions, minFeeActiveTvlRatio, "
+        "minVolume, minHolders, screeningIntervalMin, managementIntervalMin, "
+        "strategy, defaultBinsBelow."
     ),
     "parameters": {
         "type": "object",

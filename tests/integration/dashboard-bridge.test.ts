@@ -168,6 +168,22 @@ describe("dashboard bridge", () => {
     expect(r.status).toBe(403);
   });
 
+  it("POST /tool blocks update_config when a cycle_id is attached (human-gated)", async () => {
+    const r = await post(
+      "/tool",
+      {
+        name: "update_config",
+        args: { changes: { stopLossPct: -10 }, reason: "test" },
+        confirm: true,
+        cycle_id: "screen-2026-08-02-abc",
+      },
+      auth,
+    );
+    expect(r.status).toBe(403);
+    const body = (await r.json()) as { error: string };
+    expect(body.error).toMatch(/human-gated/);
+  });
+
   it("POST /tool requires confirm for write tools", async () => {
     const r = await post("/tool", { name: "close_position", args: { position_address: "x" } }, auth);
     expect(r.status).toBe(403);

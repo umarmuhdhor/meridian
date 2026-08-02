@@ -171,6 +171,16 @@ export async function handleRequest(
 
     const write = isWriteTool(name);
     if (write && confirm !== true) return json(res, 403, { error: "confirm required" });
+    // Hard gate: config edits are human-only. A cycle_id is only ever attached
+    // by autonomous screening delegation → its presence means "this call did not
+    // come from a human chat". No prompt can bypass this — the check is here,
+    // not in Sage's system prompt.
+    if (name === "update_config" && typeof cycle_id === "string" && cycle_id.length > 0) {
+      return json(res, 403, {
+        error: "update_config is human-gated; not permitted inside a delegation cycle",
+        cycle_id,
+      });
+    }
     // Idempotency: a write carrying a cycle_id that already committed (e.g. the
     // screening delegation succeeded, then its fallback retried the same cycle) is a
     // duplicate — reject before acquiring the lock or executing. See idempotency.ts.

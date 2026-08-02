@@ -295,6 +295,9 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       "cycle_id (verbatim from the task).",
       "Do NOT call mrd_get_candidates, mrd_get_positions, mrd_get_wallet, or any other tool —",
       "everything you need is in this message.",
+      "ABSOLUTELY DO NOT call mrd_update_config in this session. Config changes are",
+      "human-gated and only permitted when the human user explicitly asks in a chat —",
+      "which is NOT this session. This is an autonomous screening cycle, not a user request.",
       "If none qualify, reply exactly: NO DEPLOY: <reason>.",
     ].join("\n");
     const sageGoal = [
