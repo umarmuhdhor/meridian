@@ -94,6 +94,7 @@ import { createIntervalScheduler } from "../adapters/scheduler/interval.js";
 import { runScreeningCycle } from "../app/screening/cycle.js";
 import { runManagementCycle } from "../app/management/cycle.js";
 import { createPnlPoller } from "../app/management/pnl-poller.js";
+import { createDustSweeper } from "../app/management/dust-sweeper.js";
 import { runBriefingCycle } from "../app/briefing/cycle.js";
 import { runHealthCycle } from "../app/health/cycle.js";
 import { createAgentMeridianHiveMind } from "../adapters/hivemind/agent-meridian.js";
@@ -528,6 +529,16 @@ async function main(): Promise<void> {
       config: ctx.config.management,
     });
     console.log("  pnl-poller: 30s trailing-TP + 15s two-phase confirm");
+
+    createDustSweeper({
+      clock: ctx.clock,
+      logger: ctx.logger,
+      chain: ctx.chain,
+      swap: ctx.swap,
+      notifier: ctx.notifier,
+      scheduler,
+    });
+    console.log("  dust-sweeper: every 5m — sells any non-SOL wallet token not held by an open position");
 
     const healthMs = ctx.config.schedule.healthCheckIntervalMin * 60_000;
     scheduler.every(

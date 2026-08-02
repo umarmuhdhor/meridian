@@ -13,6 +13,15 @@ export const DEFAULT_CONSOLIDATE_SLIPPAGE_BPS = 300;
 /** Fallback dust floor (USD) when a caller doesn't pass one. */
 export const DEFAULT_CONSOLIDATE_MIN_USD = 0.5;
 
+/**
+ * Race window between `closePosition` returning and the wallet ATA balance
+ * being visible on the next `getWalletTokens` read. The RPC may lag the
+ * signature confirmation by a few seconds. Retry the balance read a few
+ * times before giving up so the withdrawal is never orphaned in the wallet.
+ */
+export const DEFAULT_CONSOLIDATE_RETRIES = 5;
+export const DEFAULT_CONSOLIDATE_RETRY_DELAY_MS = 3_000;
+
 export interface ConsolidateDeps {
   chain: ChainClient;
   swap: SwapClient;
@@ -22,6 +31,12 @@ export interface ConsolidateDeps {
   slippageBps?: number;
   /** Skip base balances priced below this USD value. Defaults to {@link DEFAULT_CONSOLIDATE_MIN_USD}. */
   minUsd?: number;
+  /** Retries when the wallet ATA hasn't reflected the close yet. Defaults to {@link DEFAULT_CONSOLIDATE_RETRIES}. */
+  retries?: number;
+  /** Backoff between retries in ms. Defaults to {@link DEFAULT_CONSOLIDATE_RETRY_DELAY_MS}. */
+  retryDelayMs?: number;
+  /** Overridable sleep for tests. Defaults to setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -51,27 +66,48 @@ export async function consolidateBaseToSol(
     return null;
   }
 
+  // Poll wallet up to `retries` times because the RPC may lag the close TX
+  // signature confirmation by a few seconds. Without this retry, close +
+  // immediate consolidate races and the base token stays orphaned in the
+  // wallet forever (the periodic dust-sweeper is the second safety net).
+  const retries = Math.max(1, deps.retries ?? DEFAULT_CONSOLIDATE_RETRIES);
+  const retryDelayMs = Math.max(0, deps.retryDelayMs ?? DEFAULT_CONSOLIDATE_RETRY_DELAY_MS);
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   let held;
-  try {
-    const tokens = await deps.chain.getWalletTokens();
-    held = tokens.find((t) => t.mint === baseMint);
-  } catch (err) {
-    deps.logger.warn("consolidate", "getWalletTokens failed — skipping", {
-      baseMint,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
-
-  const rawStr = held?.raw ?? "0";
-  let rawAmount: bigint;
-  try {
-    rawAmount = BigInt(rawStr);
-  } catch {
-    rawAmount = 0n;
+  let rawAmount = 0n;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      const tokens = await deps.chain.getWalletTokens();
+      held = tokens.find((t) => t.mint === baseMint);
+    } catch (err) {
+      deps.logger.warn("consolidate", "getWalletTokens failed", {
+        baseMint,
+        attempt,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      held = undefined;
+    }
+    const rawStr = held?.raw ?? "0";
+    try {
+      rawAmount = BigInt(rawStr);
+    } catch {
+      rawAmount = 0n;
+    }
+    if (held && rawAmount > 0n) break;
+    if (attempt < retries) {
+      deps.logger.info("consolidate", "base balance not visible yet — retrying", {
+        baseMint,
+        attempt,
+        retries,
+      });
+      await sleep(retryDelayMs);
+    }
   }
   if (!held || rawAmount <= 0n) {
-    deps.logger.info("consolidate", "no base balance to consolidate", { baseMint });
+    deps.logger.info("consolidate", "no base balance to consolidate after retries", {
+      baseMint,
+      retries,
+    });
     return null;
   }
 
@@ -92,13 +128,13 @@ export async function consolidateBaseToSol(
       // amount_in_raw is authoritative (BigInt-exact); amount_in is a best-effort numeric
       // echo for adapters/tests that only read the number field.
       amount_in: Number(rawAmount),
-      amount_in_raw: rawStr,
+      amount_in_raw: rawAmount.toString(),
       slippage_bps: deps.slippageBps ?? DEFAULT_CONSOLIDATE_SLIPPAGE_BPS,
     });
     if (result.success) {
       deps.logger.info("consolidate", "consolidated base → SOL", {
         baseMint,
-        amount_in_raw: rawStr,
+        amount_in_raw: rawAmount.toString(),
         amount_out: result.amount_out,
         tx: result.tx,
       });

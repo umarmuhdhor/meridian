@@ -44,7 +44,16 @@ function recordingSwap(): { swap: SwapClient; calls: SwapArgs[] } {
 }
 
 function makeDeps(chain: ChainClient, swap: SwapClient): ConsolidateDeps & { notifier: ReturnType<typeof createCollectingNotifier> } {
-  return { chain, swap, notifier: createCollectingNotifier(), logger: nullLogger };
+  // retries=1 + no-op sleep keeps existing single-shot tests fast; retry-loop
+  // tests override these explicitly.
+  return {
+    chain,
+    swap,
+    notifier: createCollectingNotifier(),
+    logger: nullLogger,
+    retries: 1,
+    sleep: async () => {},
+  };
 }
 
 describe("consolidateBaseToSol", () => {
@@ -138,6 +147,52 @@ describe("consolidateBaseToSol", () => {
     const { swap, calls } = recordingSwap();
     const chain = chainWithTokens([], { throws: true });
     const result = await consolidateBaseToSol(makeDeps(chain, swap), BASE_MINT);
+    expect(result).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("retries when the wallet ATA balance isn't visible yet (RPC race)", async () => {
+    let call = 0;
+    const chain: ChainClient = {
+      async getWalletTokens() {
+        call += 1;
+        if (call < 3) return []; // first two reads: RPC lag → empty
+        return [{ mint: BASE_MINT, symbol: null, balance: 1000, raw: "1000000000", usd: 42 }];
+      },
+    } as unknown as ChainClient;
+    const { swap, calls } = recordingSwap();
+    const sleepCalls: number[] = [];
+    const deps: ConsolidateDeps & { notifier: ReturnType<typeof createCollectingNotifier> } = {
+      chain,
+      swap,
+      notifier: createCollectingNotifier(),
+      logger: nullLogger,
+      retries: 5,
+      retryDelayMs: 10,
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+      },
+    };
+    const result = await consolidateBaseToSol(deps, BASE_MINT);
+    expect(result?.success).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(call).toBe(3); // stopped as soon as balance appeared
+    expect(sleepCalls).toEqual([10, 10]);
+  });
+
+  it("gives up cleanly after exhausting retries — logs but never throws", async () => {
+    const chain = chainWithTokens([]); // always empty
+    const { swap, calls } = recordingSwap();
+    const deps: ConsolidateDeps & { notifier: ReturnType<typeof createCollectingNotifier> } = {
+      chain,
+      swap,
+      notifier: createCollectingNotifier(),
+      logger: nullLogger,
+      retries: 3,
+      retryDelayMs: 5,
+      sleep: async () => {},
+    };
+    const result = await consolidateBaseToSol(deps, BASE_MINT);
     expect(result).toBeNull();
     expect(calls).toHaveLength(0);
   });
