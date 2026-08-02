@@ -361,9 +361,9 @@ happens when a file is served over the bridge. In production these live on the
 | `MERIDIAN_STATE_DIR` | where JSON state lives (default cwd). |
 | `MERIDIAN_DEMO` | `true` forces the fake LLM. |
 | `DASHBOARD_ENABLED` / `DASHBOARD_PORT` / `DASHBOARD_TOKEN` | bridge on/off, port (8787), Bearer token. |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_ALLOWED_USER_IDS` | ops surface + auth. |
-| `MERIDIAN_TELEGRAM_INBOUND` | `false` → Calisto is notify-only (outbound cards, NO inbound LLM REPL). Default (unset) = inbound on. |
-| **`MERIDIAN_DECIDER`** | `sage` → screening delegates the deploy decision to Sage (Path 2); anything else / unset = local LLM loop. |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_ALLOWED_USER_IDS` | ops surface + auth. In production (since 2026-08-02) `TELEGRAM_BOT_TOKEN` is Sage's bot token — Meridian and Hermes share the same bot identity (@SageHermesAnd_bot); Meridian only writes, Hermes handles inbound. |
+| `MERIDIAN_TELEGRAM_INBOUND` | **must be `false` in production** — two processes polling the shared token = `getUpdates` 409. Set as compose default. |
+| **`MERIDIAN_DECIDER`** | `sage` → screening delegates the deploy decision to Sage (Path 2); anything else / unset = local LLM loop. **Compose default is `sage` since 2026-08-02.** |
 | `SAGE_BASE_URL` / `SAGE_API_KEY` / `SAGE_SESSION_KEY` / `SAGE_TIMEOUT_MS` | Sage endpoint (Hermes api), memory-scope header, delegation timeout (default 90s). Only read when `MERIDIAN_DECIDER=sage`. On vivobook production the URL is intra-host: `http://host.docker.internal:8643` (see `docker-compose.yml` `extra_hosts`). |
 | `SAGE_CF_ACCESS_CLIENT_ID` / `SAGE_CF_ACCESS_CLIENT_SECRET` | **Historical** — CF Access service-token headers used when Sage was fronted by Cloudflare Access (pre-2026-08-01 Tencent era). Intra-host path drops them; the code still reads them if set. |
 | `SOL_PRICE_USD` | static-price fallback (default 150). |
@@ -403,10 +403,12 @@ cron control `/pause /resume /stop` (need `scheduler`/`shutdown` deps); write co
 text → GENERAL agent tick (`GENERAL_TOOLS`, `maxSteps:8`). **Auth (chat-id / user
 allowlist) is upstream** (the inbound adapter), not in the router.
 
-**Notify-only mode**: with `MERIDIAN_TELEGRAM_INBOUND=false` the daemon never starts the
-inbound REPL — the bot ("Calisto") only posts outbound deploy/close cards, no LLM
-replies. In production this is set so **Sage** (the Hermes bot in the same group) is the
-sole conversational brain; Calisto is a static notifier. See
+**Notify-only mode (production default)**: with `MERIDIAN_TELEGRAM_INBOUND=false` the
+daemon never starts the inbound REPL — only posts outbound deploy/close cards. Since
+2026-08-02 the token itself is Sage's (@SageHermesAnd_bot), so those cards appear from
+the same bot that replies to you conversationally. Hermes is the sole `getUpdates` poller
+on the shared token — flipping inbound back on would cause a 409 Conflict. Calisto bot
+retired; env backups on the host at `~/meridian/.env.bak-sagebot-*`. See
 [`deploy/SAGE-MERIDIAN-ROLLOUT.md`](deploy/SAGE-MERIDIAN-ROLLOUT.md).
 
 ---

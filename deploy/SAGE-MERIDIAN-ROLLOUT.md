@@ -47,24 +47,29 @@ AUTONOMOUS SCREENING (Sage decides, real funds)
     on timeout/transport error → OpenRouter local loop (same cycle_id; bridge
       idempotency blocks a double-deploy)
 
-ON-DEMAND (you ↔ Sage in the "Meridian Calisto" Telegram group)
+ON-DEMAND (you ↔ Sage in the Meridian Telegram group)
   you → Sage (@SageHermesAnd_bot) → mrd_get_positions / analyze / close → bridge
-  Calisto (Meridian's own bot) posts ✅Deployed / 📪Closed cards — notify-only, no LLM
+  Meridian posts ✅Deployed / 📪Closed cards from the SAME bot (@SageHermesAnd_bot)
+    — Meridian's TELEGRAM_BOT_TOKEN = Sage's token since 2026-08-02 (Calisto retired,
+      single-bot identity, Hermes handles all inbound polling)
 ```
 
-## Live config
+## Live config (as of 2026-08-02, post single-bot swap)
 
-**Meridian (HK) `~/meridian/.env`** — arming + Calisto static:
+**Meridian (vivobook) `~/meridian/.env`** — screening delegated + telegram token shared with Sage:
 ```
-MERIDIAN_DECIDER=sage
-SAGE_BASE_URL=https://sage-api.nafidinara.com
-SAGE_API_KEY=<sage API_SERVER_KEY>
+MERIDIAN_DECIDER=sage                       # also set as compose env default
+SAGE_BASE_URL=http://host.docker.internal:8643   # intra-host, no CF Access
+SAGE_API_KEY=<sage API_SERVER_KEY>          # matches ~/.hermes/profiles/sage/.env
 SAGE_SESSION_KEY=meridian-trading
-SAGE_CF_ACCESS_CLIENT_ID=207fb797a4051e5696b9d4c426c110e6.access
-SAGE_CF_ACCESS_CLIENT_SECRET=<held by owner>
 SAGE_TIMEOUT_MS=90000
-MERIDIAN_TELEGRAM_INBOUND=false     # Calisto = notify-only (cards, no LLM replies)
+MERIDIAN_TELEGRAM_INBOUND=false             # also compose default; must stay false
+TELEGRAM_BOT_TOKEN=<Sage bot token>         # = ~/.hermes/profiles/sage/.env TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID=-1004388814457             # unchanged, same group
 ```
+`user-config.json`: `deployAmountSol=0.2`, `maxPositions=3`, chain=meteora. Backups on
+disk: `~/meridian/.env.bak-sagebot-*` (pre-token-swap Calisto config). SAGE_CF_ACCESS_*
+no longer needed (intra-host path).
 `user-config.json`: `deployAmountSol=0.2`, `maxPositions=3`, chain=meteora.
 `meridian-bridge-proxy` is a durable **compose service** in `docker-compose.yml`
 (`network_mode: service:meridian`) so `up -d --force-recreate` re-attaches it every deploy.
@@ -120,8 +125,8 @@ profile dir — Hermes sets `HERMES_HOME` to the profile when run with `-p sage`
 
 ## Rollback
 
-- Disarm Sage (back to local loop): HK `~/meridian/.env` remove/`=loop` `MERIDIAN_DECIDER`, `docker compose up -d meridian`.
-- Re-enable Calisto LLM replies: remove `MERIDIAN_TELEGRAM_INBOUND=false`, redeploy.
+- Disarm Sage (back to local loop): remove `MERIDIAN_DECIDER=sage` from `docker-compose.yml` environment (or set `=loop`), redeploy.
+- Restore Calisto bot identity + LLM replies: on vivobook, `cp ~/meridian/.env.bak-sagebot-<ts> ~/meridian/.env`, remove `MERIDIAN_TELEGRAM_INBOUND=false` from compose env, `docker compose up -d --force-recreate meridian`. ⚠ Only safe if Hermes is not also polling the token — Meridian and Hermes must not share a token if both listen.
 - Sage out of group: set `require_mention: true` (or remove `allowed_chats`), s6 restart sage.
 - Backups on disk: HK `.env.bak-path2`, `user-config.json.bak-path2`; vivobook sage `config.yaml.bak-path2`, `.env.bak-path2`, `config.yaml.bak-group`.
 

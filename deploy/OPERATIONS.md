@@ -18,7 +18,7 @@
 | **Runtime** | Docker: `meridian`, `meridian-web` (2 containers). Reverse proxy = vivobook's shared `caddy` + `cloudflared` (already running for other services). `docker compose` (no sudo needed; user in `docker` group). |
 | **Trading** | LIVE — real wallet, `DRY_RUN=false`, `MERIDIAN_WRITE_UNSAFE=true` |
 | **Screening decider** | **Sage** (Hermes agent on same host), `MERIDIAN_DECIDER=sage`, intra-docker delegation via `host.docker.internal:8643` → `sage-api-proxy` (socat) → `hermes:8642`. Local LLM loop is the fallback. |
-| **Telegram** | "Calisto" = notify-only (`MERIDIAN_TELEGRAM_INBOUND=false`, cards only); **Sage** (@SageHermesAnd_bot) is the conversational brain in the group. |
+| **Telegram** | Single bot: **@SageHermesAnd_bot** posts BOTH Sage's replies AND Meridian's deploy/close cards. Meridian's `TELEGRAM_BOT_TOKEN` = Sage's bot token (swapped 2026-08-02 — Calisto bot retired). `MERIDIAN_TELEGRAM_INBOUND=false` so only Hermes polls the token (avoids `getUpdates` 409). |
 | **Dashboard** | https://calisto.nafidinara.com (Cloudflare Access + 6-digit PIN) |
 | **Deploy** | push to `dashboard` → GitHub Actions (`ubuntu-latest`) → GHCR + `scp`/`ssh` to vivobook over Cloudflare Access SSH → `deploy.sh` |
 | **Registry** | `ghcr.io/umarmuhdhor/meridian` (private) |
@@ -222,9 +222,9 @@ echo "<GITHUB_PAT_with_read:packages>" | docker login ghcr.io -u umarmuhdhor --p
 | `MERIDIAN_DASHBOARD_PIN_HASH` | `salt:scryptHash` of the dashboard PIN (see §7). |
 | `MERIDIAN_SESSION_SECRET` | 32-byte hex, signs the dashboard session cookie. |
 | `DRY_RUN` / `MERIDIAN_WRITE_UNSAFE` | live gates: `false` / `true`. |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Calisto bot + group. |
-| `MERIDIAN_TELEGRAM_INBOUND` | `false` → Calisto notify-only (no LLM replies; Sage is the brain). |
-| `MERIDIAN_DECIDER=sage` + `SAGE_BASE_URL=http://host.docker.internal:8643` + `SAGE_API_KEY` / `SAGE_SESSION_KEY=meridian-trading` / `SAGE_TIMEOUT_MS=90000` | Path 2 Sage delegation, now intra-host. `SAGE_CF_ACCESS_*` no longer used (removed at migration). |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | **Sage's bot token** (@SageHermesAnd_bot) + group ID. Same token Hermes uses — Meridian only posts outbound cards, Hermes handles inbound. Calisto bot retired 2026-08-02; backups at `~/meridian/.env.bak-sagebot-*`. |
+| `MERIDIAN_TELEGRAM_INBOUND` | **must be `false`** now that the token is shared with Hermes — two processes on `getUpdates` = 409 Conflict. |
+| `MERIDIAN_DECIDER=sage` + `SAGE_BASE_URL=http://host.docker.internal:8643` + `SAGE_API_KEY` / `SAGE_SESSION_KEY=meridian-trading` / `SAGE_TIMEOUT_MS=90000` | Path 2 Sage delegation, intra-host. `SAGE_CF_ACCESS_*` no longer used (removed at migration). Set as compose `environment` defaults on 2026-08-02, so a fresh `.env` alone is enough. |
 | `HELIUS_API_KEY` | **unused in the TS rewrite** (leftover); safe to leave blank. |
 
 Adapter selection lives in `docker-compose.yml` env, not `.env`:
@@ -314,7 +314,9 @@ should be `302` (redirect into Access).
 | `MERIDIAN_IMAGE`/`MERIDIAN_REG` override ignored | `sudo docker compose` strips env without `-E`. Only relevant for local-registry testing. |
 | Screening always logs `sage delegation failed, falling back` | `hermes` container down or `sage-api-proxy` (socat) not listening. Check `docker ps \| grep -E 'hermes\|sage-api-proxy'` — both should be Up. `curl -sSf http://127.0.0.1:8643/v1/models -H "Authorization: Bearer $SAGE_API_KEY"` on the host verifies socat→hermes. First screening cycle after a host reboot may briefly show this while hermes finishes booting — expected. Trading continues on the local loop meanwhile. |
 | `SAGE_BASE_URL` connection refused inside Meridian container | `extra_hosts: host.docker.internal:host-gateway` missing (needs Docker Engine ≥20.10) or hermes/socat not on the host. `docker exec meridian getent hosts host.docker.internal` should resolve to the docker bridge gateway IP. |
-| Sage silent in Telegram group / Calisto still replying | Sage: check `allowed_chats` + bot privacy (BotFather `/setprivacy`). Calisto: ensure `MERIDIAN_TELEGRAM_INBOUND=false`. |
+| Sage silent in Telegram group | Check `allowed_chats` in `~/.hermes/profiles/sage/config.yaml` + BotFather `/setprivacy`. Confirm hermes is up. |
+| No deploy/close cards posting | Meridian's `TELEGRAM_BOT_TOKEN` must equal Sage's (`~/.hermes/profiles/sage/.env`). Verify: `docker exec meridian env \| grep TELEGRAM_BOT_TOKEN`. |
+| Duplicate replies / bot `getUpdates` 409 in logs | Two processes polling same token. `MERIDIAN_TELEGRAM_INBOUND` must be `false` (only Hermes polls). |
 
 ---
 

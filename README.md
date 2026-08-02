@@ -99,8 +99,11 @@ npm start                                      # boot the daemon
 | `MERIDIAN_FROZEN_TIME` | ISO string | Freeze clock for deterministic runs |
 | `MERIDIAN_DEMO` | `true` / unset | Force the fake LLM script for one-shot demo |
 | `RPC_URL`, `WALLET_PRIVATE_KEY` | | Required when `MERIDIAN_CHAIN=meteora` |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | | Enables Telegram outbound + inbound |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | | Enables Telegram outbound (+ inbound if `MERIDIAN_TELEGRAM_INBOUND` unset). In production the token is shared with Sage (Hermes) — single-bot identity, Meridian only writes. |
 | `TELEGRAM_ALLOWED_USER_IDS` | comma list | Required for group chats |
+| `MERIDIAN_TELEGRAM_INBOUND` | `false` / unset | `false` = daemon never starts inbound REPL (required when the token is shared with another poller). |
+| `MERIDIAN_DECIDER` | `sage` / unset | `sage` delegates the screening deploy decision to the external Sage (Hermes) agent via `SAGE_BASE_URL` (Path 2); anything else = local LLM loop. |
+| `SAGE_BASE_URL`, `SAGE_API_KEY`, `SAGE_SESSION_KEY`, `SAGE_TIMEOUT_MS` | | Sage endpoint config; only read when `MERIDIAN_DECIDER=sage`. |
 | `OPENROUTER_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | | LLM provider config |
 | `DASHBOARD_ENABLED` | `true` / unset | Start the localhost control-dashboard bridge. Without it the bridge module is never imported — daemon behavior is identical. |
 | `DASHBOARD_PORT` | port (default `8787`) | Bridge TCP port (bound to `127.0.0.1` only) |
