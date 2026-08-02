@@ -54,10 +54,11 @@ services:
     # Requires Docker Engine >= 20.10.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    ports:
-      # Loopback-only, for SSH-tunnel admin (`ssh -L 3000:127.0.0.1:3000 vivobook-public`).
-      # Public path is via Caddy on the "web" network.
-      - "127.0.0.1:3000:3000"
+    # No host port binding — vivobook already has :3000 taken by another
+    # service. Dashboard access is via Caddy on the `web` net (Caddyfile:
+    # `calisto.nafidinara.com { reverse_proxy meridian:3000 }`). For SSH-tunnel
+    # admin, exec into the container: `docker exec meridian curl -sI localhost:3000`,
+    # or point Caddy at a private host header + ssh -L for local browsing.
     networks: [web]
 
   meridian-web:
