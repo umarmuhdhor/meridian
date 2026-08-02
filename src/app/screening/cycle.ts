@@ -73,7 +73,8 @@ interface TopCandidatesResult {
 
 interface Diligence {
   rug?: { score: number; top10_pct: number; passes: boolean; reason: string | null };
-  holders?: { count: number; top10_pct: number; bot_pct: number };
+  /** total from discovery (pool.holders — authoritative), concentration from getHolders top-10 fetch. */
+  holders?: { total: number | null; top10_pct: number | null; bot_pct: number | null };
   error?: string;
 }
 
@@ -100,7 +101,7 @@ async function enrichCandidates(
       const mint = p.pool.base_mint;
       if (!mint) return {};
       try {
-        const [rug, holders] = await Promise.all([
+        const [rug, holdersLookup] = await Promise.all([
           timeout(ctx.market.rugCheck.check(mint)).catch(() => null),
           timeout(ctx.market.tokenInfo.getHolders(mint, 10)).catch(() => null),
         ]);
@@ -112,12 +113,21 @@ async function enrichCandidates(
             passes: rug.passes,
             reason: rug.reason,
           };
-        if (holders)
+        // Total holder count = pool.holders from discovery (authoritative, populated
+        // by meteora datapi's base_token_holders). getHolders.count is only the number
+        // of TOP-10 rows that parsed — it's ≤10 by definition, so treating it as "total
+        // holders" was the "holders=0" bug that made Sage reject valid candidates.
+        // top10_pct and bot_pct come from the getHolders response — null when the API
+        // returned nothing parseable (Sage can then correctly flag "concentration unknown").
+        const total = p.pool.holders ?? null;
+        const gotTop10 = holdersLookup !== null && holdersLookup.top.length > 0;
+        if (total != null || gotTop10) {
           out.holders = {
-            count: holders.count,
-            top10_pct: holders.top10_pct,
-            bot_pct: holders.bot_pct,
+            total,
+            top10_pct: gotTop10 ? holdersLookup!.top10_pct : null,
+            bot_pct: gotTop10 ? holdersLookup!.bot_pct : null,
           };
+        }
         return out;
       } catch (e) {
         return { error: (e as Error).message ?? String(e) };
@@ -145,9 +155,11 @@ function formatCandidatesBlock(
         );
       }
       if (d.holders) {
-        parts.push(
-          `holders=${d.holders.count}  top10=${d.holders.top10_pct.toFixed(1)}%  bots=${d.holders.bot_pct.toFixed(1)}%`,
-        );
+        const h = d.holders;
+        const totalStr = h.total != null ? `${h.total}` : "unknown";
+        const top10Str = h.top10_pct != null ? `${h.top10_pct.toFixed(1)}%` : "n/a";
+        const botsStr = h.bot_pct != null ? `${h.bot_pct.toFixed(1)}%` : "n/a";
+        parts.push(`holders=${totalStr}  top10=${top10Str}  bots=${botsStr}`);
       }
       if (d.error) parts.push(`diligence_error=${d.error}`);
       if (!parts.length) return base;
@@ -366,8 +378,12 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     // ranked candidates directly and one job: deploy the chosen one via mrd_deploy_position.
     const sageSystemPrompt = [
       "You are Meridian's DLMM screening decider. You are given PRE-FILTERED, RANKED pool",
-      "candidates with FRESH DILIGENCE inline (rug_score, holders count, top10 concentration,",
-      "bot share). This is your GMGN-equivalent verification — do NOT go fetch more.",
+      "candidates with FRESH DILIGENCE inline (rug_score, total holders count, top10",
+      "concentration %, bot share %). Field notes: `holders=N` is the TOTAL holder count",
+      "from the pool discovery source (authoritative). `top10=X%` / `bots=Y%` come from a",
+      "separate top-10 holder lookup — if that lookup returned nothing the fields render",
+      "as `n/a` (unknown), NOT `0.0%`. Zero-value fields mean genuine zero, not missing data.",
+      "This is your GMGN-equivalent verification — do NOT go fetch more.",
       "Pick the single best candidate to deploy into, or none.",
       "To deploy, call mrd_deploy_position EXACTLY ONCE with: pool_address (from the chosen",
       "candidate), pool_name (the human-readable name from the candidate line, e.g. \"BONK-SOL\"),",
