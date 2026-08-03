@@ -205,7 +205,11 @@ export function createJupiterSwapClient(opts: JupiterSwapOptions): SwapClient {
         amountRaw,
         slippageBps: slippage,
       };
-      if (opts.referralFeeBps) {
+      // Jupiter rejects a swap that quoted `platformFeeBps` without a matching
+      // `feeAccount` (NOT_SUPPORTED). Only add the platform fee if BOTH the
+      // fee bps AND the referral account are configured — otherwise every
+      // swap 400s the moment platformFeeBps ships without feeAccount.
+      if (opts.referralFeeBps && opts.referralAccount) {
         quoteInputs.referralFeeBps = opts.referralFeeBps;
       }
       const quote = await fetchQuote(quoteInputs);
