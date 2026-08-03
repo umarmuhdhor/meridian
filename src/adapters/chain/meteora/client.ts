@@ -393,29 +393,39 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
       const web3 = await import("@solana/web3.js");
       const conn = connection.raw as InstanceType<typeof web3.Connection>;
       const owner = new web3.PublicKey(wallet.address);
-      const TOKEN_PROGRAM_ID = new web3.PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+      // Query BOTH SPL Token (classic) AND Token-2022. Post-2024 launchpads
+      // (pump.fun / Jupiter Studio) mint tokens under Token-2022 by default,
+      // and a classic-only query never sees them → the sweeper thinks the
+      // wallet is empty even when it holds thousands of dollars of tokens.
+      const TOKEN_PROGRAM_IDS = [
+        new web3.PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+        new web3.PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
+      ];
       let holdings: { mint: string; balance: number; raw: string }[] = [];
-      try {
-        const resp = await conn.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID });
-        for (const { account } of resp.value) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const info = (account.data as any)?.parsed?.info;
-          const mint: unknown = info?.mint;
-          const amt: unknown = info?.tokenAmount?.uiAmount;
-          const rawStr: unknown = info?.tokenAmount?.amount;
-          if (typeof mint === "string" && typeof amt === "number" && amt > 0) {
-            // `amount` is the raw base-unit integer STRING; keep it verbatim so callers can
-            // swap the exact holding at full precision (uiAmount can't be reversed without
-            // decimals, and Number() would lose precision above 2^53).
-            const raw = typeof rawStr === "string" ? rawStr : "0";
-            holdings.push({ mint, balance: amt, raw });
+      for (const programId of TOKEN_PROGRAM_IDS) {
+        try {
+          const resp = await conn.getParsedTokenAccountsByOwner(owner, { programId });
+          for (const { account } of resp.value) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const info = (account.data as any)?.parsed?.info;
+            const mint: unknown = info?.mint;
+            const amt: unknown = info?.tokenAmount?.uiAmount;
+            const rawStr: unknown = info?.tokenAmount?.amount;
+            if (typeof mint === "string" && typeof amt === "number" && amt > 0) {
+              // `amount` is the raw base-unit integer STRING; keep it verbatim so callers can
+              // swap the exact holding at full precision (uiAmount can't be reversed without
+              // decimals, and Number() would lose precision above 2^53).
+              const raw = typeof rawStr === "string" ? rawStr : "0";
+              holdings.push({ mint, balance: amt, raw });
+            }
           }
+        } catch (err) {
+          logger.warn("meteora", "getWalletTokens: token accounts fetch failed", {
+            programId: programId.toBase58(),
+            error: err instanceof Error ? err.message : String(err),
+          });
+          // Don't return early — the other program's accounts may still be reachable.
         }
-      } catch (err) {
-        logger.warn("meteora", "getWalletTokens: token accounts fetch failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return [];
       }
       if (holdings.length === 0) return [];
       // Batch-price via Jupiter (best-effort; unpriced tokens surface usd:null).
