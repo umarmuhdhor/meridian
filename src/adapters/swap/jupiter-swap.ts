@@ -6,7 +6,10 @@ import type { SolanaConnection, WalletKeypair } from "../../ports/solana.js";
 import type { SwapArgs, SwapResult } from "../../domain/schemas/chain.js";
 
 /** Jupiter Quote/Swap API base URL. */
-export const DEFAULT_JUPITER_SWAP_BASE_URL = "https://quote-api.jup.ag/v6";
+// Jupiter deprecated `quote-api.jup.ag/v6` — resolves NXDOMAIN in 2026.
+// Free tier now lives at `lite-api.jup.ag/swap/v1`; paid at `api.jup.ag/swap/v1`.
+// Same request/response shape as v6, only the URL changed.
+export const DEFAULT_JUPITER_SWAP_BASE_URL = "https://lite-api.jup.ag/swap/v1";
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 
