@@ -169,6 +169,8 @@ export async function routeTelegramMessage(
               logger: deps.ctx.logger,
               slippageBps: deps.ctx.config.management.autoSwapSlippageBps,
               minUsd: deps.ctx.config.management.autoSwapMinUsd,
+              retries: deps.ctx.config.management.consolidateRetries,
+              retryDelayMs: deps.ctx.config.management.consolidateRetryDelayMs,
             },
             result.base_mint,
           );

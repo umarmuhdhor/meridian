@@ -39,6 +39,12 @@ export const FlatUserConfigSchema = z
     repeatDeployCooldownMinFeeEarnedPct: z.number().nonnegative().default(1.5),
     autoSwapSlippageBps: z.number().int().min(1).max(10_000).default(300),
     autoSwapMinUsd: z.number().nonnegative().default(0.5),
+    consolidateRetries: z.number().int().min(1).max(20).default(5),
+    consolidateRetryDelayMs: z.number().int().min(0).max(30_000).default(3_000),
+    dustSweepEnabled: z.boolean().default(true),
+    dustSweepIntervalMin: z.number().int().min(1).max(1440).default(5),
+    dustSweepMinUsd: z.number().nonnegative().default(0.01),
+    dustSweepSlippageBps: z.number().int().min(1).max(10_000).default(500),
 
     // strategy
     strategy: z.enum(["spot", "curve", "bid_ask"]),

@@ -530,15 +530,25 @@ async function main(): Promise<void> {
     });
     console.log("  pnl-poller: 30s trailing-TP + 15s two-phase confirm");
 
-    createDustSweeper({
-      clock: ctx.clock,
-      logger: ctx.logger,
-      chain: ctx.chain,
-      swap: ctx.swap,
-      notifier: ctx.notifier,
-      scheduler,
-    });
-    console.log("  dust-sweeper: every 5m — sells any non-SOL wallet token not held by an open position");
+    if (ctx.config.management.dustSweepEnabled) {
+      const sweepMs = ctx.config.management.dustSweepIntervalMin * 60_000;
+      createDustSweeper({
+        clock: ctx.clock,
+        logger: ctx.logger,
+        chain: ctx.chain,
+        swap: ctx.swap,
+        notifier: ctx.notifier,
+        scheduler,
+        intervalMs: sweepMs,
+        minUsd: ctx.config.management.dustSweepMinUsd,
+        slippageBps: ctx.config.management.dustSweepSlippageBps,
+      });
+      console.log(
+        `  dust-sweeper: every ${sweepMs / 1000}s — sells any non-SOL wallet token above $${ctx.config.management.dustSweepMinUsd} not held by an open position`,
+      );
+    } else {
+      console.log("  dust-sweeper: disabled (management.dustSweepEnabled=false)");
+    }
 
     const healthMs = ctx.config.schedule.healthCheckIntervalMin * 60_000;
     scheduler.every(

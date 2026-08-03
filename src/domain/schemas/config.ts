@@ -29,6 +29,21 @@ export const ManagementConfigSchema = z.object({
   autoSwapSlippageBps: z.number().int().min(1).max(10_000).default(300),
   /** Skip consolidating a leftover base balance priced below this USD value (dust). */
   autoSwapMinUsd: z.number().nonnegative().default(0.5),
+  /** Retries when the wallet ATA balance hasn't reflected the just-closed position yet
+   *  (RPC lag between TX signature confirm and ATA balance visibility). */
+  consolidateRetries: z.number().int().min(1).max(20).default(5),
+  /** Backoff between retries in ms. */
+  consolidateRetryDelayMs: z.number().int().min(0).max(30_000).default(3_000),
+  /** Periodic dust-sweeper — sells every non-SOL token in the wallet that isn't held
+   *  by an open position. Second safety net behind per-close consolidation. */
+  dustSweepEnabled: z.boolean().default(true),
+  dustSweepIntervalMin: z.number().int().min(1).max(1440).default(5),
+  /** Minimum USD value to sweep. Sub-cent floor by default — "always sell" —
+   *  but leaves rounding-error residuals no aggregator can route. */
+  dustSweepMinUsd: z.number().nonnegative().default(0.01),
+  /** Slippage (bps) for sweeper swaps. Higher default than per-close because
+   *  swept leftovers are often the thinnest post-exit bags. */
+  dustSweepSlippageBps: z.number().int().min(1).max(10_000).default(500),
 });
 export type ManagementConfig = z.infer<typeof ManagementConfigSchema>;
 

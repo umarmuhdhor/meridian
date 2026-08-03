@@ -197,6 +197,8 @@ export function createPnlPoller(deps: PnlPollerDeps): PnlPollerHandle {
                 logger: deps.logger,
                 slippageBps: deps.config.autoSwapSlippageBps,
                 minUsd: deps.config.autoSwapMinUsd,
+                retries: deps.config.consolidateRetries,
+                retryDelayMs: deps.config.consolidateRetryDelayMs,
               },
               result.base_mint,
             );

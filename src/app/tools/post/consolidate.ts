@@ -20,6 +20,8 @@ export const consolidateCloseHook: PostHook<unknown, CloseResult> = async (_args
       logger: ctx.logger,
       slippageBps: ctx.config.management.autoSwapSlippageBps,
       minUsd: ctx.config.management.autoSwapMinUsd,
+      retries: ctx.config.management.consolidateRetries,
+      retryDelayMs: ctx.config.management.consolidateRetryDelayMs,
     },
     result.base_mint,
   );

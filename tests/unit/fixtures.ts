@@ -27,6 +27,12 @@ export const mgmt: ManagementConfig = {
   repeatDeployCooldownMinFeeEarnedPct: 1.5,
   autoSwapSlippageBps: 300,
   autoSwapMinUsd: 0.5,
+  consolidateRetries: 1,
+  consolidateRetryDelayMs: 0,
+  dustSweepEnabled: false,
+  dustSweepIntervalMin: 5,
+  dustSweepMinUsd: 0.01,
+  dustSweepSlippageBps: 500,
 };
 
 // Threshold values here mirror the former inline `defaultThresholds` constants so

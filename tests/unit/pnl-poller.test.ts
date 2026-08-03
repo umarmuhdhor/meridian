@@ -54,6 +54,12 @@ const mgmt: ManagementConfig = {
   repeatDeployCooldownMinFeeEarnedPct: 1.5,
   autoSwapSlippageBps: 250,
   autoSwapMinUsd: 0.5,
+  consolidateRetries: 1,
+  consolidateRetryDelayMs: 0,
+  dustSweepEnabled: false,
+  dustSweepIntervalMin: 5,
+  dustSweepMinUsd: 0.01,
+  dustSweepSlippageBps: 500,
 };
 
 function makeLive(overrides: Partial<OnChainPosition & { _peakPnlPct: number }> = {}): OnChainPosition {

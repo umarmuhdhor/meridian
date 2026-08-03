@@ -46,6 +46,24 @@
 
   "minClaimAmount": 5,
   "autoSwapAfterClaim": false,
+
+  "// autoSwapSlippageBps": "Slippage (bps) when consolidating a just-closed position's base → SOL.",
+  "autoSwapSlippageBps": 300,
+  "// autoSwapMinUsd": "Per-close: skip consolidating base balance below this USD.",
+  "autoSwapMinUsd": 0.5,
+  "// consolidateRetries": "Poll wallet up to N times to survive RPC lag after close.",
+  "consolidateRetries": 5,
+  "consolidateRetryDelayMs": 3000,
+
+  "// dustSweepEnabled": "Periodic sweep of the whole wallet — sells every non-SOL token not held by an open position.",
+  "dustSweepEnabled": true,
+  "// dustSweepIntervalMin": "Sweep frequency (minutes).",
+  "dustSweepIntervalMin": 5,
+  "// dustSweepMinUsd": "Minimum USD value to sweep. 0.01 = 'always sell', higher = leave dust.",
+  "dustSweepMinUsd": 0.01,
+  "// dustSweepSlippageBps": "Slippage (bps) for sweeper swaps. Higher than per-close because leftovers are often thinnest.",
+  "dustSweepSlippageBps": 500,
+
   "outOfRangeBinsToClose": 10,
   "outOfRangeWaitMinutes": 30,
   "oorCooldownTriggerCount": 3,
