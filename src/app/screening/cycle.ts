@@ -487,7 +487,10 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       });
       const deployed = await detectDeploy();
       if (deployed) {
-        ctx.logger.info("screening", `sage delegated — deploy landed (cycle=${cycleId})`);
+        const rationale = result.text.trim();
+        ctx.logger.info("screening", `sage delegated — deploy landed (cycle=${cycleId})`, {
+          rationale: rationale ? rationale.slice(0, 800) : "(empty)",
+        });
       } else {
         const topPicks = picked
           .slice(0, 3)
