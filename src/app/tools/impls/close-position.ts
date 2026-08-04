@@ -5,6 +5,7 @@ import { logCloseDecision } from "../post/log-decision.js";
 import { notifyCloseHook } from "../post/notify.js";
 import { consolidateCloseHook } from "../post/consolidate.js";
 import { markClosedInRepoHook } from "../post/mark-closed.js";
+import { recordPerformanceHook } from "../post/record-performance.js";
 import { enrichCloseResult } from "../../../domain/format/enrich-close.js";
 
 const ArgsSchema = z.object({
@@ -19,7 +20,7 @@ export const closePositionTool = defineTool({
   args: ArgsSchema,
   result: CloseResultSchema,
   oncePerSession: true,
-  post: [markClosedInRepoHook, notifyCloseHook, logCloseDecision("MANAGER"), consolidateCloseHook],
+  post: [markClosedInRepoHook, recordPerformanceHook, notifyCloseHook, logCloseDecision("MANAGER"), consolidateCloseHook],
   execute: async ({ position_address, reason }, ctx) => {
     // Snapshot the position before closing so we can enrich the CloseResult
     // (real chain client returns null pnl/value/fees). If the position is
