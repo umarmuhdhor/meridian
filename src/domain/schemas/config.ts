@@ -3,10 +3,7 @@ import { z } from "zod";
 export const ManagementConfigSchema = z.object({
   stopLossPct: z.number(),
   takeProfitPct: z.number(),
-  outOfRangeBinsToClose: z.number().int().nonnegative(),
   outOfRangeWaitMinutes: z.number().int().nonnegative(),
-  oorCooldownTriggerCount: z.number().int().positive(),
-  oorCooldownHours: z.number().positive(),
   minFeePerTvl24h: z.number().nonnegative(),
   minAgeBeforeYieldCheck: z.number().int().nonnegative(),
   minClaimAmount: z.number().nonnegative(),
@@ -16,48 +13,28 @@ export const ManagementConfigSchema = z.object({
   deployAmountSol: z.number().positive(),
   gasReserve: z.number().nonnegative(),
   positionSizePct: z.number().positive().max(1),
-  minSolToOpen: z.number().nonnegative(),
   pnlSanityMaxDiffPct: z.number().positive(),
   solMode: z.boolean(),
-  repeatDeployCooldownEnabled: z.boolean(),
-  repeatDeployCooldownTriggerCount: z.number().int().positive(),
-  repeatDeployCooldownHours: z.number().positive(),
-  repeatDeployCooldownScope: z.enum(["token", "pool", "pool_and_token"]),
-  repeatDeployCooldownMinFeeEarnedPct: z.number().nonnegative(),
-  /** Slippage (bps) for the auto-swap that consolidates a closed position's base token
-   *  back to SOL. Higher than a normal swap because exited memecoins are often thin. */
   autoSwapSlippageBps: z.number().int().min(1).max(10_000).default(300),
-  /** Skip consolidating a leftover base balance priced below this USD value (dust). */
   autoSwapMinUsd: z.number().nonnegative().default(0.5),
-  /** Retries when the wallet ATA balance hasn't reflected the just-closed position yet
-   *  (RPC lag between TX signature confirm and ATA balance visibility). */
   consolidateRetries: z.number().int().min(1).max(20).default(5),
-  /** Backoff between retries in ms. */
   consolidateRetryDelayMs: z.number().int().min(0).max(30_000).default(3_000),
-  /** Periodic dust-sweeper — sells every non-SOL token in the wallet that isn't held
-   *  by an open position. Second safety net behind per-close consolidation. */
   dustSweepEnabled: z.boolean().default(true),
   dustSweepIntervalMin: z.number().int().min(1).max(1440).default(5),
-  /** Minimum USD value to sweep. Sub-cent floor by default — "always sell" —
-   *  but leaves rounding-error residuals no aggregator can route. */
   dustSweepMinUsd: z.number().nonnegative().default(0.01),
-  /** Slippage (bps) for sweeper swaps. Higher default than per-close because
-   *  swept leftovers are often the thinnest post-exit bags. */
   dustSweepSlippageBps: z.number().int().min(1).max(10_000).default(500),
 });
 export type ManagementConfig = z.infer<typeof ManagementConfigSchema>;
 
 export const RiskConfigSchema = z.object({
   maxPositions: z.number().int().positive(),
-  maxDeployAmount: z.number().positive(),
 });
 export type RiskConfig = z.infer<typeof RiskConfigSchema>;
 
 export const StrategyConfigSchema = z.object({
+  /** AI default only — Sage overrides per candidate. Kept for legacy fallback + Telegram REPL. */
   strategy: z.enum(["spot", "curve", "bid_ask"]),
-  minBinsBelow: z.number().int().min(35),
-  maxBinsBelow: z.number().int().min(35),
-  defaultBinsBelow: z.number().int().min(35),
+  binsBelow: z.number().int().min(35),
 });
 export type StrategyConfig = z.infer<typeof StrategyConfigSchema>;
 
@@ -84,11 +61,6 @@ export const ScreeningConfigSchema = z.object({
   maxBinStep: z.number().int().nonnegative(),
   timeframe: z.string(),
   category: z.string(),
-  minTokenFeesSol: z.number().nonnegative(),
-  useDiscordSignals: z.boolean(),
-  discordSignalMode: z.enum(["merge", "only"]),
-  avoidPvpSymbols: z.boolean(),
-  blockPvpSymbols: z.boolean(),
   maxBotHoldersPct: z.number().min(0).max(100),
   maxTop10Pct: z.number().min(0).max(100),
   allowedLaunchpads: z.array(z.string()),
@@ -108,18 +80,6 @@ export const LlmConfigSchema = z.object({
 });
 export type LlmConfig = z.infer<typeof LlmConfigSchema>;
 
-export const DarwinConfigSchema = z.object({
-  enabled: z.boolean(),
-  windowDays: z.number().int().positive(),
-  recalcEvery: z.number().int().positive(),
-  boostFactor: z.number().positive(),
-  decayFactor: z.number().positive(),
-  weightFloor: z.number().positive(),
-  weightCeiling: z.number().positive(),
-  minSamples: z.number().int().positive(),
-});
-export type DarwinConfig = z.infer<typeof DarwinConfigSchema>;
-
 export const HiveMindConfigSchema = z.object({
   url: z.string(),
   apiKey: z.string(),
@@ -131,29 +91,14 @@ export type HiveMindConfig = z.infer<typeof HiveMindConfigSchema>;
 export const ApiConfigSchema = z.object({
   url: z.string(),
   publicApiKey: z.string(),
-  lpAgentRelayEnabled: z.boolean(),
 });
 export type ApiConfig = z.infer<typeof ApiConfigSchema>;
 
 export const JupiterConfigSchema = z.object({
-  apiKey: z.string().default(""),
   referralAccount: z.string().default(""),
   referralFeeBps: z.number().int().min(0).max(10_000).default(50),
 });
 export type JupiterConfig = z.infer<typeof JupiterConfigSchema>;
-
-export const IndicatorsConfigSchema = z.object({
-  enabled: z.boolean(),
-  entryPreset: z.string(),
-  exitPreset: z.string(),
-  rsiLength: z.number().int().positive(),
-  intervals: z.array(z.string()),
-  candles: z.number().int().positive(),
-  rsiOversold: z.number().min(0).max(100),
-  rsiOverbought: z.number().min(0).max(100),
-  requireAllIntervals: z.boolean(),
-});
-export type IndicatorsConfig = z.infer<typeof IndicatorsConfigSchema>;
 
 /** Canonical Solana mint addresses — used by swap normalization + reference. */
 export const TokensConfigSchema = z.object({
@@ -163,14 +108,6 @@ export const TokensConfigSchema = z.object({
 });
 export type TokensConfig = z.infer<typeof TokensConfigSchema>;
 
-export const PnlSourceConfigSchema = z.object({
-  source: z.enum(["rpc", "meteora"]),
-  rpcUrl: z.string(),
-  pollIntervalSec: z.number().int().positive(),
-  depositCacheTtlSec: z.number().int().nonnegative(),
-});
-export type PnlSourceConfig = z.infer<typeof PnlSourceConfigSchema>;
-
 export const AppConfigSchema = z.object({
   risk: RiskConfigSchema,
   management: ManagementConfigSchema,
@@ -178,13 +115,10 @@ export const AppConfigSchema = z.object({
   schedule: ScheduleConfigSchema,
   screening: ScreeningConfigSchema,
   llm: LlmConfigSchema,
-  darwin: DarwinConfigSchema,
   hiveMind: HiveMindConfigSchema,
   api: ApiConfigSchema,
   jupiter: JupiterConfigSchema,
-  indicators: IndicatorsConfigSchema,
   tokens: TokensConfigSchema,
-  pnl: PnlSourceConfigSchema,
 });
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 

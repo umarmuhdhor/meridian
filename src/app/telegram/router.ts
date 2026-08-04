@@ -30,12 +30,12 @@ export interface TelegramRouterDeps {
 function computeDeployAmountSol(
   walletSol: number,
   cfg: { deployAmountSol: number; gasReserve: number; positionSizePct: number },
-  maxDeployAmount: number,
 ): number {
   const available = Math.max(0, walletSol - cfg.gasReserve);
-  const sized = available * cfg.positionSizePct;
-  const clamped = Math.min(Math.max(sized, cfg.deployAmountSol), maxDeployAmount);
-  return Math.round(clamped * 100) / 100;
+  // `deployAmountSol` is the per-position size; `positionSizePct * available` acts as
+  // the wallet-fraction cap so a small wallet still gets sized down.
+  const capped = Math.min(cfg.deployAmountSol, available * cfg.positionSizePct);
+  return Math.round(Math.max(0, capped) * 100) / 100;
 }
 
 /**
@@ -269,28 +269,24 @@ export async function routeTelegramMessage(
       const wallet = await deps.ctx.chain.getWalletBalance();
       const amountSol =
         amountOverride ??
-        computeDeployAmountSol(
-          wallet.sol,
-          deps.ctx.config.management,
-          deps.ctx.config.risk.maxDeployAmount,
-        );
-      const { strategy, defaultBinsBelow } = deps.ctx.config.strategy;
+        computeDeployAmountSol(wallet.sol, deps.ctx.config.management);
+      const { strategy, binsBelow } = deps.ctx.config.strategy;
       deps.ctx.logger.info("telegram-router", "deploy requested via telegram", {
         pool_address: poolAddress,
         amount_sol: amountSol,
         strategy,
-        bins_below: defaultBinsBelow,
+        bins_below: binsBelow,
       });
       await deps.ctx.notifier.notify(
         "info",
-        `Deploying ${amountSol} SOL on ${poolAddress.slice(0, 8)}… (${strategy}, ${defaultBinsBelow} bins)…`,
+        `Deploying ${amountSol} SOL on ${poolAddress.slice(0, 8)}… (${strategy}, ${binsBelow} bins)…`,
       );
       try {
         const result = await deps.ctx.chain.deployPosition({
           pool_address: poolAddress,
           amount_sol: amountSol,
           strategy,
-          bins_below: defaultBinsBelow,
+          bins_below: binsBelow,
           bins_above: 0,
         });
         if (result.success) {

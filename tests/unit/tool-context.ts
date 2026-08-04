@@ -25,9 +25,9 @@ import { createFakeStudy } from "../../src/adapters/market/fake-study.js";
 import { mgmt, screening } from "./fixtures.js";
 
 const cfg = {
-  risk: { maxPositions: 3, maxDeployAmount: 50 },
+  risk: { maxPositions: 3 },
   management: mgmt,
-  strategy: { strategy: "bid_ask", minBinsBelow: 35, maxBinsBelow: 69, defaultBinsBelow: 69 },
+  strategy: { strategy: "bid_ask", binsBelow: 69 },
   schedule: { managementIntervalMin: 10, screeningIntervalMin: 30, healthCheckIntervalMin: 60 },
   screening,
 } as unknown as AppConfig;

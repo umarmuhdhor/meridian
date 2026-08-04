@@ -297,17 +297,67 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
   // can't safely fan out into gmgn-cli / rugcheck (90s timeout, prompt forbids it),
   // and repeated "vetoed 2x, need GMGN-confirmed improvement" no-deploys were the
   // symptom. Pool memory/history changes minute-to-minute — always fresh, never cached.
-  const diligence = await enrichCandidates(picked, ctx);
+  const diligenceRaw = await enrichCandidates(picked, ctx);
+
+  // Post-enrichment diligence gate — screening's `maxBotHoldersPct` /
+  // `maxTop10Pct` thresholds were declared but never enforced. Rejection reasons
+  // existed in the type but no code path returned them, so the caps silently
+  // passed everything. Apply them here on the enriched shortlist. Fail-open on
+  // unknown data (holders lookup returned nothing → keep the candidate; the LLM
+  // still sees `top10=n/a` and can veto).
+  const maxBot = ctx.config.screening.maxBotHoldersPct;
+  const maxTop10 = ctx.config.screening.maxTop10Pct;
+  const dilKept: number[] = [];
+  const dilRejected: Array<{ name: string; kind: "bot" | "top10"; value: number; max: number }> = [];
+  for (let i = 0; i < picked.length; i++) {
+    const d = diligenceRaw[i];
+    const bot = d?.holders?.bot_pct;
+    const top10 = d?.holders?.top10_pct ?? d?.rug?.top10_pct;
+    const poolName = picked[i]?.pool.name ?? "?";
+    if (bot != null && bot > maxBot) {
+      dilRejected.push({ name: poolName, kind: "bot", value: bot, max: maxBot });
+      continue;
+    }
+    if (top10 != null && top10 > maxTop10) {
+      dilRejected.push({ name: poolName, kind: "top10", value: top10, max: maxTop10 });
+      continue;
+    }
+    dilKept.push(i);
+  }
+  if (dilRejected.length > 0) {
+    ctx.logger.info(
+      "screening",
+      `diligence filter dropped ${dilRejected.length}/${picked.length}`,
+      { rejected: dilRejected.map((r) => `${r.name} ${r.kind}=${r.value.toFixed(1)}%>${r.max}%`) },
+    );
+  }
+  const pickedFiltered = dilKept.map((i) => picked[i]!) as typeof picked;
+  const diligence = dilKept.map((i) => diligenceRaw[i]!);
+
+  if (pickedFiltered.length === 0) {
+    const reason = `All ${picked.length} shortlisted candidate(s) failed diligence caps (bot% > ${maxBot} or top10% > ${maxTop10}).`;
+    await appendNoDeploy(ctx, {
+      summary: `Diligence filter rejected all ${picked.length} candidates`,
+      reason,
+      metrics: {
+        scanned: (candidates.value as TopCandidatesResult).scanned,
+        passed: (candidates.value as TopCandidatesResult).passed,
+        candidates: picked.length,
+        rejected_diligence: dilRejected.length,
+      },
+    });
+    return { kind: "no_deploy", picked: 0, rejection_summary: dilRejected.map((r) => `${r.kind}_pct_too_high`) };
+  }
 
   const goal = [
     "SCREENING CYCLE — pick one of the following candidates and call deploy_position, or explain why none qualify.",
     "",
     "CANDIDATES (fresh diligence included — do NOT fetch more):",
-    formatCandidatesBlock(picked, diligence),
+    formatCandidatesBlock(pickedFiltered, diligence),
     "",
     `Deploy amount: ${ctx.config.management.deployAmountSol} SOL.`,
     `Strategy: choose per candidate {spot|curve|bid_ask} — spot for high-vol meme coins, curve for low-vol range-bound, bid_ask ONLY with a declared directional thesis. Config default "${ctx.config.strategy.strategy}" is a hint, not an order.`,
-    `bins_below floor: ${ctx.config.strategy.minBinsBelow}. Default: ${ctx.config.strategy.defaultBinsBelow}.`,
+    `bins_below: ${ctx.config.strategy.binsBelow}.`,
   ].join("\n");
 
   const scanned = (candidates.value as TopCandidatesResult).scanned;
@@ -422,9 +472,9 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       "SCREENING CYCLE — choose one candidate and call mrd_deploy_position, or NO DEPLOY.",
       "",
       "CANDIDATES (fresh diligence included — do NOT fetch more):",
-      formatCandidatesBlock(picked, diligence),
+      formatCandidatesBlock(pickedFiltered, diligence),
       "",
-      `amount_sol: ${ctx.config.management.deployAmountSol}. bins_below: ${ctx.config.strategy.defaultBinsBelow} (floor ${ctx.config.strategy.minBinsBelow}). bins_above: 0.`,
+      `amount_sol: ${ctx.config.management.deployAmountSol}. bins_below: ${ctx.config.strategy.binsBelow}. bins_above: 0.`,
       `strategy: CHOOSE per candidate (spot | curve | bid_ask). Config default is "${ctx.config.strategy.strategy}" — treat as a hint only. Justify the choice from the candidate's volatility before deploying. Default for meme coins is spot; use bid_ask only with a declared directional thesis.`,
     ].join("\n");
     try {

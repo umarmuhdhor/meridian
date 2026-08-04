@@ -18,13 +18,9 @@ afterEach(async () => {
 const flatFixture = {
   // risk / management
   maxPositions: 3,
-  maxDeployAmount: 50,
   stopLossPct: -50,
   takeProfitPct: 5,
-  outOfRangeBinsToClose: 10,
   outOfRangeWaitMinutes: 30,
-  oorCooldownTriggerCount: 3,
-  oorCooldownHours: 12,
   minFeePerTvl24h: 7,
   minAgeBeforeYieldCheck: 60,
   minClaimAmount: 5,
@@ -34,24 +30,16 @@ const flatFixture = {
   deployAmountSol: 0.5,
   gasReserve: 0.2,
   positionSizePct: 0.35,
-  minSolToOpen: 0.55,
   pnlSanityMaxDiffPct: 5,
   solMode: false,
-  repeatDeployCooldownEnabled: true,
-  repeatDeployCooldownTriggerCount: 3,
-  repeatDeployCooldownHours: 12,
-  repeatDeployCooldownScope: "token" as const,
-  repeatDeployCooldownMinFeeEarnedPct: 1.5,
   // strategy
   strategy: "bid_ask" as const,
-  minBinsBelow: 35,
-  maxBinsBelow: 69,
-  defaultBinsBelow: 69,
+  binsBelow: 69,
   // schedule
   managementIntervalMin: 10,
   screeningIntervalMin: 30,
   healthCheckIntervalMin: 60,
-  // extras (untouched)
+  // extras (untouched via passthrough)
   rpcUrl: "https://example.com",
   llmModel: "test-model",
 };
@@ -81,12 +69,9 @@ describe("flatToNested / nestedToFlat", () => {
     if (!r.ok) return;
     expect(r.value.screening.minTvl).toBe(10_000);
     expect(r.value.llm.maxTokens).toBe(4096);
-    expect(r.value.darwin.enabled).toBe(true);
     expect(r.value.hiveMind.pullMode).toBe("auto");
     expect(r.value.jupiter.referralFeeBps).toBe(50);
-    expect(r.value.indicators.enabled).toBe(false);
     expect(r.value.tokens.SOL).toBe("So11111111111111111111111111111111111111112");
-    expect(r.value.pnl.source).toBe("rpc");
   });
 });
 
@@ -99,8 +84,8 @@ describe("parseAppConfig", () => {
     if (!r.ok) expect(r.error.kind).toBe("flat_invalid");
   });
 
-  it("rejects when minBinsBelow < 35 (safety floor)", () => {
-    const r = parseAppConfig({ ...flatFixture, minBinsBelow: 20 });
+  it("rejects when binsBelow < 35 (safety floor)", () => {
+    const r = parseAppConfig({ ...flatFixture, binsBelow: 20 });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe("flat_invalid");
   });

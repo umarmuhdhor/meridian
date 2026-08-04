@@ -436,7 +436,7 @@ async function main(): Promise<void> {
   console.log(`${banner} boot ok @ ${startedAt}`);
   console.log(`  llm: ${usingDemoLLM ? "fake (demo)" : "openrouter"}`);
   console.log(`  max positions: ${ctx.config.risk.maxPositions}`);
-  console.log(`  strategy: ${ctx.config.strategy.strategy} bins=${ctx.config.strategy.defaultBinsBelow}`);
+  console.log(`  strategy: ${ctx.config.strategy.strategy} bins=${ctx.config.strategy.binsBelow}`);
 
   const walletAtBoot = await ctx.chain.getWalletBalance();
   console.log(`  wallet: ${walletAtBoot.sol} SOL ($${walletAtBoot.sol_usd})`);

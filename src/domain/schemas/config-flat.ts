@@ -5,21 +5,19 @@ import { z } from "zod";
  * We accept unknown extras via `.passthrough()` so encrypted / experimental keys pass
  * through untouched; the domain layer reads only what it knows about.
  *
- * New (non-Phase-1) sections — screening, llm, darwin, hiveMind, api, jupiter, indicators,
- * tokens, pnl — are entirely optional-with-defaults so pre-existing user-config.json files
- * (which don't carry them) keep parsing without change.
+ * Kept intentionally minimal — only keys the daemon actually reads. Config-audit
+ * (2026-08-04) removed ~40 keys that had zero read sites in `src/`, and collapsed
+ * three overlaps (`risk.maxDeployAmount` → merged into `deployAmountSol`,
+ * `outOfRangeBinsToClose` dropped in favour of the time trigger, `maxBinsBelow` /
+ * `minBinsBelow` collapsed into a single `binsBelow`).
  */
 export const FlatUserConfigSchema = z
   .object({
     // risk / management
     maxPositions: z.number().int().positive(),
-    maxDeployAmount: z.number().positive(),
     stopLossPct: z.number(),
     takeProfitPct: z.number(),
-    outOfRangeBinsToClose: z.number().int().nonnegative(),
     outOfRangeWaitMinutes: z.number().int().nonnegative(),
-    oorCooldownTriggerCount: z.number().int().positive(),
-    oorCooldownHours: z.number().positive(),
     minFeePerTvl24h: z.number().nonnegative(),
     minAgeBeforeYieldCheck: z.number().int().nonnegative(),
     minClaimAmount: z.number().nonnegative(),
@@ -28,15 +26,10 @@ export const FlatUserConfigSchema = z
     trailingDropPct: z.number().positive(),
     deployAmountSol: z.number().positive(),
     gasReserve: z.number().nonnegative(),
+    /** Telegram `/deploy` REPL-only — fraction of wallet SOL sized per position. */
     positionSizePct: z.number().positive().max(1),
-    minSolToOpen: z.number().nonnegative(),
     pnlSanityMaxDiffPct: z.number().positive(),
     solMode: z.boolean(),
-    repeatDeployCooldownEnabled: z.boolean().default(true),
-    repeatDeployCooldownTriggerCount: z.number().int().positive().default(3),
-    repeatDeployCooldownHours: z.number().positive().default(12),
-    repeatDeployCooldownScope: z.enum(["token", "pool", "pool_and_token"]).default("token"),
-    repeatDeployCooldownMinFeeEarnedPct: z.number().nonnegative().default(1.5),
     autoSwapSlippageBps: z.number().int().min(1).max(10_000).default(300),
     autoSwapMinUsd: z.number().nonnegative().default(0.5),
     consolidateRetries: z.number().int().min(1).max(20).default(5),
@@ -46,11 +39,11 @@ export const FlatUserConfigSchema = z
     dustSweepMinUsd: z.number().nonnegative().default(0.01),
     dustSweepSlippageBps: z.number().int().min(1).max(10_000).default(500),
 
-    // strategy
+    // strategy — Sage picks per candidate (see screening/cycle.ts). `strategy` here
+    // is only the fallback for legacy positions / Telegram REPL, and the label the
+    // dashboard shows as the "AI default".
     strategy: z.enum(["spot", "curve", "bid_ask"]),
-    minBinsBelow: z.number().int().min(35),
-    maxBinsBelow: z.number().int().min(35),
-    defaultBinsBelow: z.number().int().min(35),
+    binsBelow: z.number().int().min(35),
 
     // schedule
     managementIntervalMin: z.number().int().positive(),
@@ -72,11 +65,6 @@ export const FlatUserConfigSchema = z
     maxBinStep: z.number().int().nonnegative().default(125),
     timeframe: z.string().default("5m"),
     category: z.string().default("trending"),
-    minTokenFeesSol: z.number().nonnegative().default(30),
-    useDiscordSignals: z.boolean().default(false),
-    discordSignalMode: z.enum(["merge", "only"]).default("merge"),
-    avoidPvpSymbols: z.boolean().default(true),
-    blockPvpSymbols: z.boolean().default(false),
     maxBotHoldersPct: z.number().min(0).max(100).default(30),
     maxTop10Pct: z.number().min(0).max(100).default(60),
     allowedLaunchpads: z.array(z.string()).default([]),
@@ -92,16 +80,6 @@ export const FlatUserConfigSchema = z
     screeningModel: z.string().default("hunter-alpha"),
     generalModel: z.string().default("healer-alpha"),
 
-    // darwin
-    darwinEnabled: z.boolean().default(true),
-    darwinWindowDays: z.number().int().positive().default(60),
-    darwinRecalcEvery: z.number().int().positive().default(5),
-    darwinBoost: z.number().positive().default(1.05),
-    darwinDecay: z.number().positive().default(0.95),
-    darwinFloor: z.number().positive().default(0.3),
-    darwinCeiling: z.number().positive().default(2.5),
-    darwinMinSamples: z.number().int().positive().default(10),
-
     // hiveMind
     hiveMindUrl: z.string().default("https://api.agentmeridian.xyz"),
     hiveMindApiKey: z.string().default(""),
@@ -111,33 +89,10 @@ export const FlatUserConfigSchema = z
     // api
     agentMeridianApiUrl: z.string().default("https://api.agentmeridian.xyz/api"),
     publicApiKey: z.string().default(""),
-    lpAgentRelayEnabled: z.boolean().default(false),
 
-    // jupiter — mostly env-driven; kept optional in the flat file
-    jupiterApiKey: z.string().default(""),
+    // jupiter — env-driven; kept optional in the flat file
     jupiterReferralAccount: z.string().default(""),
     jupiterReferralFeeBps: z.number().int().min(0).max(10_000).default(50),
-
-    // indicators — nested block in the flat file
-    chartIndicators: z
-      .object({
-        enabled: z.boolean().default(false),
-        entryPreset: z.string().default("supertrend_break"),
-        exitPreset: z.string().default("supertrend_break"),
-        rsiLength: z.number().int().positive().default(2),
-        intervals: z.array(z.string()).default(["5_MINUTE"]),
-        candles: z.number().int().positive().default(298),
-        rsiOversold: z.number().min(0).max(100).default(30),
-        rsiOverbought: z.number().min(0).max(100).default(80),
-        requireAllIntervals: z.boolean().default(false),
-      })
-      .default({}),
-
-    // pnl source
-    pnlSource: z.enum(["rpc", "meteora"]).default("rpc"),
-    pnlRpcUrl: z.string().default("https://pump.helius-rpc.com"),
-    pnlPollIntervalSec: z.number().int().positive().default(3),
-    pnlDepositCacheTtlSec: z.number().int().nonnegative().default(300),
   })
   .passthrough();
 export type FlatUserConfig = z.infer<typeof FlatUserConfigSchema>;

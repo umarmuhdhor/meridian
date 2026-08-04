@@ -55,21 +55,13 @@ export const updateConfigTool = defineTool({
     // Work on a raw clone (passthrough keeps extra keys); apply recognized changes.
     const flat: Record<string, unknown> = { ...(loaded.value as Record<string, unknown>) };
     const shape = FlatUserConfigSchema.shape as Record<string, z.ZodTypeAny>;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ciShape = (shape.chartIndicators?._def as any)?.innerType?.shape ?? (shape.chartIndicators as any)?.shape ?? {};
     const applied: Record<string, unknown> = {};
     const unknown: string[] = [];
 
     for (const [key, val] of Object.entries(changes)) {
-      if (key !== "chartIndicators" && Object.prototype.hasOwnProperty.call(shape, key)) {
+      if (Object.prototype.hasOwnProperty.call(shape, key)) {
         const coerced = coerce(shape[key], val);
         flat[key] = coerced;
-        applied[key] = coerced;
-      } else if (Object.prototype.hasOwnProperty.call(ciShape, key)) {
-        const ci = { ...((flat.chartIndicators as Record<string, unknown>) ?? {}) };
-        const coerced = coerce(ciShape[key] as z.ZodTypeAny, val);
-        ci[key] = coerced;
-        flat.chartIndicators = ci;
         applied[key] = coerced;
       } else {
         unknown.push(key);

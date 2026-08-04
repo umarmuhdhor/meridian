@@ -1,48 +1,63 @@
-// MIRROR of tools/executor.js update_config CONFIG_MAP. Secret keys
-// (hiveMindApiKey, gmgnApiKey, publicApiKey) are read-only + redacted server-side.
-// Indicator keys read from user-config.chartIndicators.* (nested); everything else flat.
+// Config-form catalog for the dashboard. Kept in lockstep with `FlatUserConfigSchema`
+// (src/domain/schemas/config-flat.ts). Every `key` here must be a real key on that
+// schema — `update_config` rejects unknowns.
 //
-// `unit`   — magnitude/currency shown next to the field so "800" reads as "$800" not "$800k".
-// `help`   — hover tooltip explaining the field.
-// `options`— renders a <select> (enum fields; values MUST match the Zod schema or saves reject).
+// Grouped into six operator-facing tabs (post-audit 2026-08-04): Screening,
+// Deploy, Exit, Rebalance & Sweep, Automation, Integrations. Advanced plumbing
+// lives in `user-config.json` and is intentionally NOT surfaced here.
+//
+// `unit`   — magnitude/currency suffix shown next to the field.
+// `help`   — hover tooltip.
+// `options`— renders a <select> (values MUST match the Zod enum or saves reject).
+// `readOnly` — displayed but not editable (informational).
 
 export type ConfigType = "number" | "boolean" | "string" | "array";
 
 export interface ConfigField {
   key: string;
-  group: string;
+  group: ConfigGroup;
   type: ConfigType;
   secret?: boolean;
-  readPath?: string[]; // where to read the current value in user-config.json (default [key])
-  unit?: string; // e.g. "USD", "SOL", "%", "hours", "bins"
-  help?: string; // hover tooltip
-  options?: readonly string[]; // enum → dropdown
+  readOnly?: boolean;
+  unit?: string;
+  help?: string;
+  options?: readonly string[];
 }
 
-const f = (key: string, type: ConfigType, group: string, extra: Partial<ConfigField> = {}): ConfigField => ({
+export const CONFIG_GROUPS = [
+  "screening",
+  "deploy",
+  "exit",
+  "rebalance",
+  "automation",
+  "integrations",
+] as const;
+export type ConfigGroup = (typeof CONFIG_GROUPS)[number];
+
+export const GROUP_LABELS: Record<ConfigGroup, string> = {
+  screening: "Screening",
+  deploy: "Deploy",
+  exit: "Exit rules",
+  rebalance: "Rebalance & Sweep",
+  automation: "Automation",
+  integrations: "Integrations",
+};
+
+export const GROUP_HELP: Record<ConfigGroup, string> = {
+  screening: "Which pools qualify. Runs before any deploy decision.",
+  deploy: "How much to put in per position, and Sage's fallback strategy.",
+  exit: "When positions close automatically. Deterministic — Sage does not race these.",
+  rebalance: "Fee claiming, dust sweeping, and low-yield closes.",
+  automation: "Cron cadence and LLM model choices.",
+  integrations: "External endpoints and API keys.",
+};
+
+const f = (key: string, type: ConfigType, group: ConfigGroup, extra: Partial<ConfigField> = {}): ConfigField => ({
   key,
   type,
   group,
   ...extra,
 });
-
-const ci = (key: string, type: ConfigType, field: string, extra: Partial<ConfigField> = {}): ConfigField =>
-  f(key, type, "indicators", { readPath: ["chartIndicators", field], ...extra });
-
-export const CONFIG_GROUPS = [
-  "screening",
-  "management",
-  "opportunity",
-  "risk",
-  "schedule",
-  "llm",
-  "strategy",
-  "pnl",
-  "hiveMind",
-  "api",
-  "gmgn",
-  "indicators",
-] as const;
 
 export const CONFIG_FIELDS: ConfigField[] = [
   // ── screening ──
@@ -60,118 +75,49 @@ export const CONFIG_FIELDS: ConfigField[] = [
   f("maxBinStep", "number", "screening", { unit: "bins", help: "Max DLMM bin step." }),
   f("timeframe", "string", "screening", { options: ["5m", "1h", "6h", "24h"], help: "Datapi stats window used for volume/fee metrics." }),
   f("category", "string", "screening", { help: "Datapi pool category filter (e.g. trending)." }),
-  f("minTokenFeesSol", "number", "screening", { unit: "SOL", help: "Min lifetime token fees generated, in SOL." }),
-  f("useDiscordSignals", "boolean", "screening", { help: "Use Discord alpha signals as candidates. HIGH-RISK per the signal provider." }),
-  f("discordSignalMode", "string", "screening", { options: ["merge", "only"], help: "merge = Discord signals + normal screening; only = Discord signals alone." }),
-  f("avoidPvpSymbols", "boolean", "screening", { help: "Down-rank PvP / competitive-launch symbols." }),
-  f("blockPvpSymbols", "boolean", "screening", { help: "Hard-reject PvP symbols entirely." }),
-  f("maxBotHoldersPct", "number", "screening", { unit: "%", help: "Max % of holders flagged as bots (0–100)." }),
-  f("maxTop10Pct", "number", "screening", { unit: "%", help: "Max % of supply held by the top-10 wallets (0–100)." }),
+  f("maxBotHoldersPct", "number", "screening", { unit: "%", help: "Max % of holders flagged as bots (0–100). Enforced post-diligence." }),
+  f("maxTop10Pct", "number", "screening", { unit: "%", help: "Max % of supply held by the top-10 wallets (0–100). Enforced post-diligence." }),
   f("allowedLaunchpads", "array", "screening", { unit: "list", help: "Comma-separated launchpads to allow. Empty = allow all." }),
   f("blockedLaunchpads", "array", "screening", { unit: "list", help: "Comma-separated launchpads to reject (e.g. letsbonk.fun)." }),
   f("minTokenAgeHours", "number", "screening", { unit: "hours", help: "Min token age in hours. Blank = no floor." }),
   f("maxTokenAgeHours", "number", "screening", { unit: "hours", help: "Max token age in hours. Blank = no ceiling." }),
-  f("minFeePerTvl24h", "number", "screening", { unit: "ratio", help: "Min 24h fee/TVL before a position is closed as low-yield." }),
-  f("loneCandidateMinDegen", "number", "screening", { unit: "score", help: "Min degen score to deploy when only one candidate passes." }),
 
-  // ── management ──
-  f("minClaimAmount", "number", "management", { unit: "USD", help: "Claim fees once unclaimed fees ≥ this, in dollars." }),
-  f("autoSwapAfterClaim", "boolean", "management", { help: "Swap the claimed token → SOL right after claiming." }),
-  f("autoSwapSlippageBps", "number", "management", { unit: "bps", help: "Slippage (bps) for the per-close auto-swap that converts a just-closed position's base token → SOL." }),
-  f("autoSwapMinUsd", "number", "management", { unit: "USD", help: "Per-close dust floor. Skip consolidating a base balance priced below this USD value." }),
-  f("consolidateRetries", "number", "management", { unit: "count", help: "How many times to poll the wallet after a close before giving up (RPC lag can delay the ATA balance)." }),
-  f("consolidateRetryDelayMs", "number", "management", { unit: "ms", help: "Backoff between consolidation polls, in milliseconds." }),
-  f("dustSweepEnabled", "boolean", "management", { help: "Enable the periodic dust-sweeper that sells every non-SOL wallet token not held by an open position." }),
-  f("dustSweepIntervalMin", "number", "management", { unit: "minutes", help: "How often the dust-sweeper runs." }),
-  f("dustSweepMinUsd", "number", "management", { unit: "USD", help: "Sweep floor. 0.01 = 'always sell', higher = leave dust." }),
-  f("dustSweepSlippageBps", "number", "management", { unit: "bps", help: "Slippage (bps) for sweeper swaps. Usually higher than per-close because leftovers are the thinnest bags." }),
-  f("outOfRangeBinsToClose", "number", "management", { unit: "bins", help: "Close when the active bin is this many bins past the position's range." }),
-  f("outOfRangeWaitMinutes", "number", "management", { unit: "minutes", help: "How long a position may sit out-of-range before closing." }),
-  f("oorCooldownTriggerCount", "number", "management", { unit: "count", help: "OOR closes within the window before the pool goes on cooldown." }),
-  f("oorCooldownHours", "number", "management", { unit: "hours", help: "Cooldown duration after repeated out-of-range closes." }),
-  f("repeatDeployCooldownEnabled", "boolean", "management", { help: "Cool down pools/tokens that were recently redeployed." }),
-  f("repeatDeployCooldownTriggerCount", "number", "management", { unit: "count", help: "Redeploys before the cooldown kicks in." }),
-  f("repeatDeployCooldownHours", "number", "management", { unit: "hours", help: "Repeat-deploy cooldown duration." }),
-  f("repeatDeployCooldownScope", "string", "management", { options: ["token", "pool", "pool_and_token"], help: "What the repeat-deploy cooldown applies to." }),
-  f("repeatDeployCooldownMinFeeEarnedPct", "number", "management", { unit: "%", help: "Skip the cooldown if the prior position earned at least this fee %." }),
-  f("minVolumeToRebalance", "number", "management", { unit: "USD", help: "Min pool volume, in dollars, before a rebalance is allowed." }),
-  f("stopLossPct", "number", "management", { unit: "%", help: "Close at this PnL loss. Negative, e.g. -50 = -50%." }),
-  f("takeProfitPct", "number", "management", { unit: "%", help: "Close at this PnL gain, e.g. 5 = +5%." }),
-  f("trailingTakeProfit", "boolean", "management", { help: "Enable trailing take-profit." }),
-  f("trailingTriggerPct", "number", "management", { unit: "%", help: "Arm the trailing stop once peak PnL reaches this %." }),
-  f("trailingDropPct", "number", "management", { unit: "%", help: "Close if PnL drops this % from its peak (after arming)." }),
-  f("pnlSanityMaxDiffPct", "number", "management", { unit: "%", help: "Max allowed divergence between reported vs derived PnL before it's flagged suspect." }),
-  f("solMode", "boolean", "management", { help: "Denominate PnL/sizing in SOL rather than USD." }),
-  f("minSolToOpen", "number", "management", { unit: "SOL", help: "Min wallet SOL required to open a new position." }),
-  f("deployAmountSol", "number", "management", { unit: "SOL", help: "SOL deployed per position." }),
-  f("gasReserve", "number", "management", { unit: "SOL", help: "SOL kept unspent for transaction fees." }),
-  f("positionSizePct", "number", "management", { unit: "fraction 0–1", help: "Fraction of wallet per position. 0.35 = 35%." }),
-  f("minAgeBeforeYieldCheck", "number", "management", { unit: "minutes", help: "Position age before the low-yield rule can close it." }),
-  f("pnlConfirmTicks", "number", "management", { unit: "count", help: "Consecutive poller ticks required to confirm a PnL-based close." }),
+  // ── deploy ──
+  f("deployAmountSol", "number", "deploy", { unit: "SOL", help: "SOL deployed per position. This is both the target size and the cap — one knob." }),
+  f("gasReserve", "number", "deploy", { unit: "SOL", help: "SOL kept unspent for transaction fees." }),
+  f("maxPositions", "number", "deploy", { unit: "count", help: "Max concurrent open positions the agent will hold." }),
+  f("binsBelow", "number", "deploy", { unit: "bins", help: "Bins below the active bin at deploy time (safety floor 35)." }),
+  f("strategy", "string", "deploy", { options: ["spot", "curve", "bid_ask"], help: "Fallback AI default only — Sage picks per candidate per cycle. spot = uniform (safe default), curve = concentrated at center, bid_ask = edges (directional thesis only)." }),
 
-  // ── opportunity + degen ──
-  f("opportunityPollEnabled", "boolean", "opportunity", { help: "Enable the opportunity poller." }),
-  f("opportunityPollIntervalSec", "number", "opportunity", { unit: "sec", help: "Opportunity poll interval, in seconds." }),
-  f("opportunityPollLimit", "number", "opportunity", { unit: "count", help: "Max opportunities pulled per poll." }),
-  f("opportunityMinScore", "number", "opportunity", { unit: "score", help: "Min opportunity score to consider." }),
-  f("opportunitySmartWalletBonus", "number", "opportunity", { unit: "score", help: "Score bonus when smart wallets are in the pool." }),
-  f("degenTargetVolRatio", "number", "opportunity", { unit: "ratio", help: "Target volume ratio for degen scoring." }),
-  f("degenTargetLpCount", "number", "opportunity", { unit: "count", help: "Target LP count for degen scoring." }),
-  f("degenTargetFeeRatio", "number", "opportunity", { unit: "ratio", help: "Target fee ratio for degen scoring." }),
-  f("degenTargetLiquidity", "number", "opportunity", { unit: "USD", help: "Target liquidity, in dollars, for degen scoring." }),
+  // ── exit rules ──
+  f("stopLossPct", "number", "exit", { unit: "%", help: "Close at this PnL loss. Negative, e.g. -50 = -50%." }),
+  f("takeProfitPct", "number", "exit", { unit: "%", help: "Close at this PnL gain, e.g. 5 = +5%." }),
+  f("trailingTakeProfit", "boolean", "exit", { help: "Enable trailing take-profit." }),
+  f("trailingTriggerPct", "number", "exit", { unit: "%", help: "Arm the trailing stop once peak PnL reaches this %." }),
+  f("trailingDropPct", "number", "exit", { unit: "%", help: "Close if PnL drops this % from its peak (after arming)." }),
+  f("outOfRangeWaitMinutes", "number", "exit", { unit: "minutes", help: "How long a position may sit out-of-range before closing." }),
 
-  // ── risk ──
-  f("maxPositions", "number", "risk", { unit: "count", help: "Max concurrent open positions the agent will hold." }),
-  f("maxDeployAmount", "number", "risk", { unit: "SOL", help: "Hard cap on SOL deployed in a single position." }),
+  // ── rebalance / sweep ──
+  f("minFeePerTvl24h", "number", "rebalance", { unit: "ratio", help: "Min 24h fee/TVL before a position is closed as low-yield." }),
+  f("minAgeBeforeYieldCheck", "number", "rebalance", { unit: "minutes", help: "Position age before the low-yield rule can close it." }),
+  f("minClaimAmount", "number", "rebalance", { unit: "USD", help: "Claim fees once unclaimed fees ≥ this, in dollars." }),
+  f("dustSweepEnabled", "boolean", "rebalance", { help: "Enable the periodic dust-sweeper that sells every non-SOL wallet token not held by an open position." }),
+  f("dustSweepIntervalMin", "number", "rebalance", { unit: "minutes", help: "How often the dust-sweeper runs." }),
 
-  // ── schedule (interval changes restart cron) ──
-  f("managementIntervalMin", "number", "schedule", { unit: "minutes", help: "How often the management cycle runs. Changing this restarts the cron." }),
-  f("screeningIntervalMin", "number", "schedule", { unit: "minutes", help: "How often the screener runs. Changing this restarts the cron." }),
-  f("healthCheckIntervalMin", "number", "schedule", { unit: "minutes", help: "Health-check interval. Changing this restarts the cron." }),
+  // ── automation ──
+  f("managementIntervalMin", "number", "automation", { unit: "minutes", help: "How often the management cycle runs. Changing this restarts the cron." }),
+  f("screeningIntervalMin", "number", "automation", { unit: "minutes", help: "How often the screener runs. Changing this restarts the cron." }),
+  f("healthCheckIntervalMin", "number", "automation", { unit: "minutes", help: "Health-check interval. Changing this restarts the cron." }),
+  f("solMode", "boolean", "automation", { help: "Denominate PnL/sizing in SOL rather than USD." }),
+  f("managementModel", "string", "automation", { unit: "model slug", help: "OpenRouter model for the manager, e.g. minimax/minimax-m2.7. Must be an exact slug." }),
+  f("screeningModel", "string", "automation", { unit: "model slug", help: "OpenRouter model for the screener. Must be an exact slug." }),
+  f("generalModel", "string", "automation", { unit: "model slug", help: "OpenRouter model for chat / Telegram. Must be an exact slug." }),
 
-  // ── llm ──
-  f("managementModel", "string", "llm", { unit: "model slug", help: "OpenRouter model for the manager, e.g. minimax/minimax-m2.7. Must be an exact slug." }),
-  f("screeningModel", "string", "llm", { unit: "model slug", help: "OpenRouter model for the screener. Must be an exact slug." }),
-  f("generalModel", "string", "llm", { unit: "model slug", help: "OpenRouter model for chat / Telegram. Must be an exact slug." }),
-  f("temperature", "number", "llm", { unit: "0–2", help: "LLM sampling temperature." }),
-  f("maxTokens", "number", "llm", { unit: "tokens", help: "Max completion tokens per LLM call." }),
-  f("maxSteps", "number", "llm", { unit: "count", help: "Max ReAct steps per agent loop." }),
-
-  // ── strategy (binsBelow* clamp ≥ 35) ──
-  f("strategy", "string", "strategy", { options: ["spot", "curve", "bid_ask"], help: "Liquidity shape. spot = uniform, curve = concentrated, bid_ask = edges." }),
-  f("minBinsBelow", "number", "strategy", { unit: "bins", help: "Min bins below the active bin (hard floor 35)." }),
-  f("maxBinsBelow", "number", "strategy", { unit: "bins", help: "Max bins below the active bin." }),
-  f("defaultBinsBelow", "number", "strategy", { unit: "bins", help: "Default bins below the active bin." }),
-
-  // ── pnl fetcher/poller ──
-  f("pnlSource", "string", "pnl", { options: ["rpc", "meteora"], help: "Where PnL is fetched from. rpc = Helius, meteora = datapi." }),
-  f("pnlRpcUrl", "string", "pnl", { unit: "url", help: "RPC endpoint for PnL when source = rpc." }),
-  f("pnlPollIntervalSec", "number", "pnl", { unit: "sec", help: "PnL poll interval, in seconds." }),
-  f("pnlDepositCacheTtlSec", "number", "pnl", { unit: "sec", help: "TTL for the deposit cache, in seconds." }),
-
-  // ── hiveMind ──
-  f("hiveMindUrl", "string", "hiveMind", { unit: "url", help: "Agent Meridian HiveMind base URL. Empty breaks hivemind-sync." }),
-  f("hiveMindApiKey", "string", "hiveMind", { secret: true, help: "HiveMind API key. Set via server; shown redacted here." }),
-  f("agentId", "string", "hiveMind", { unit: "id", help: "This agent's HiveMind id." }),
-  f("hiveMindPullMode", "string", "hiveMind", { options: ["auto", "manual"], help: "auto = sync every 15m; manual = only on demand." }),
-
-  // ── api / relay ──
-  f("publicApiKey", "string", "api", { secret: true, help: "Study-top-lpers / lpagent API key. Set via server; shown redacted." }),
-  f("agentMeridianApiUrl", "string", "api", { unit: "url", help: "Agent Meridian API base URL (study top LPers)." }),
-  f("lpAgentRelayEnabled", "boolean", "api", { help: "Relay position PnL to the LP agent." }),
-
-  // ── gmgn ──
-  f("gmgnFeeSource", "string", "gmgn", { help: "Fee data source for GMGN enrichment." }),
-  f("gmgnApiKey", "string", "gmgn", { secret: true, help: "GMGN API key. Set via server; shown redacted." }),
-
-  // ── indicators (nested chartIndicators.*) ──
-  ci("chartIndicatorsEnabled", "boolean", "enabled", { help: "Enable RSI / indicator gating on entries & exits." }),
-  ci("indicatorEntryPreset", "string", "entryPreset", { help: "Named entry indicator preset." }),
-  ci("indicatorExitPreset", "string", "exitPreset", { help: "Named exit indicator preset." }),
-  ci("rsiLength", "number", "rsiLength", { unit: "count", help: "RSI lookback length (candles)." }),
-  ci("indicatorIntervals", "array", "intervals", { unit: "list", help: "Comma-separated candle intervals, e.g. 5m, 15m, 1h." }),
-  ci("indicatorCandles", "number", "candles", { unit: "count", help: "How many candles to fetch per interval." }),
-  ci("rsiOversold", "number", "rsiOversold", { unit: "0–100", help: "RSI oversold threshold." }),
-  ci("rsiOverbought", "number", "rsiOverbought", { unit: "0–100", help: "RSI overbought threshold." }),
-  ci("requireAllIntervals", "boolean", "requireAllIntervals", { help: "Require every interval to agree before acting." }),
+  // ── integrations ──
+  f("hiveMindUrl", "string", "integrations", { unit: "url", help: "Agent Meridian HiveMind base URL. Empty breaks hivemind-sync." }),
+  f("hiveMindApiKey", "string", "integrations", { secret: true, help: "HiveMind API key. Shown redacted." }),
+  f("agentId", "string", "integrations", { unit: "id", help: "This agent's HiveMind id." }),
+  f("hiveMindPullMode", "string", "integrations", { options: ["auto", "manual"], help: "auto = sync every 15m; manual = only on demand." }),
+  f("agentMeridianApiUrl", "string", "integrations", { unit: "url", help: "Agent Meridian API base URL (study top LPers)." }),
+  f("publicApiKey", "string", "integrations", { secret: true, help: "Study-top-lpers / lpagent API key. Shown redacted." }),
 ];
