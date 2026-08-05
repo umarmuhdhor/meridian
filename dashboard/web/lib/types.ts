@@ -33,6 +33,7 @@ export interface Position {
   amount_sol_initial?: number | null;
   initial_value_usd?: number | null;
   entry_mcap?: number | null;
+  current_mcap?: number | null;
   holders_at_entry?: number | null;
   smart_wallets_present?: boolean | null;
   bin_step?: number | null;

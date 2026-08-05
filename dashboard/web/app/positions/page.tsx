@@ -54,9 +54,12 @@ function OpenPositionDetail({ p }: { p: Position }) {
   const upperPct = upperRatio != null ? (upperRatio - 1) * 100 : null;
   const nowPct = nowRatio != null ? (nowRatio - 1) * 100 : null;
 
-  const minMcap = p.entry_mcap != null && lowerRatio != null ? p.entry_mcap * lowerRatio : null;
-  const maxMcap = p.entry_mcap != null && upperRatio != null ? p.entry_mcap * upperRatio : null;
-  const nowMcap = p.entry_mcap != null && nowRatio != null ? p.entry_mcap * nowRatio : null;
+  // Prefer entry_mcap as anchor; fall back to current_mcap for positions
+  // where Sage didn't record entry_mcap at deploy.
+  const mcapAnchor = p.entry_mcap ?? p.current_mcap ?? null;
+  const minMcap = mcapAnchor != null && lowerRatio != null ? mcapAnchor * lowerRatio : null;
+  const maxMcap = mcapAnchor != null && upperRatio != null ? mcapAnchor * upperRatio : null;
+  const nowMcap = p.current_mcap ?? (mcapAnchor != null && nowRatio != null ? mcapAnchor * nowRatio : null);
 
   // Always derive age from deployed_at when present — server's age_minutes may
   // lag by a poll cycle, and this gives us fresh values on every render.
@@ -226,14 +229,24 @@ function OpenPositions() {
                     <td className="px-3 py-2.5 text-text-secondary">{p.strategy || "-"}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum" title={binRange(p.lower_bin ?? null, p.upper_bin ?? null)}>
                       {(() => {
-                        // Compact mcap range: entry_mcap × price ratio at lower/upper bin.
-                        const ref = p.active_bin_at_deploy ?? p.upper_bin ?? null;
-                        const lowerR = binPriceRatio(p.lower_bin ?? null, ref, p.bin_step ?? null);
-                        const upperR = binPriceRatio(p.upper_bin ?? null, ref, p.bin_step ?? null);
-                        const lo = p.entry_mcap != null && lowerR != null ? p.entry_mcap * lowerR : null;
-                        const hi = p.entry_mcap != null && upperR != null ? p.entry_mcap * upperR : null;
+                        // Prefer entry_mcap as anchor (with active_bin_at_deploy as
+                        // reference); fall back to current_mcap anchored at active_bin.
+                        // Both give a mcap range that reflects the position's bin span.
+                        const bs = p.bin_step ?? null;
+                        let anchor: number | null = null;
+                        let ref: number | null = null;
+                        if (p.entry_mcap != null) {
+                          anchor = p.entry_mcap;
+                          ref = p.active_bin_at_deploy ?? p.upper_bin ?? null;
+                        } else if (p.current_mcap != null) {
+                          anchor = p.current_mcap;
+                          ref = p.active_bin ?? p.upper_bin ?? null;
+                        }
+                        const lowerR = binPriceRatio(p.lower_bin ?? null, ref, bs);
+                        const upperR = binPriceRatio(p.upper_bin ?? null, ref, bs);
+                        const lo = anchor != null && lowerR != null ? anchor * lowerR : null;
+                        const hi = anchor != null && upperR != null ? anchor * upperR : null;
                         if (lo != null && hi != null) return `${compact(lo)} → ${compact(hi)}`;
-                        // Fallback to bin range for legacy positions with no entry_mcap / bin_step yet.
                         return binRange(p.lower_bin ?? null, p.upper_bin ?? null);
                       })()}
                     </td>

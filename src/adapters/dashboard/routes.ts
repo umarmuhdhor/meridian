@@ -119,6 +119,41 @@ export async function handleRequest(
             } else if (totalUsd != null && pnlPct != null && 100 + pnlPct !== 0) {
               derivedPnlUsd = Math.round(((totalUsd * pnlPct) / (100 + pnlPct)) * 100) / 100;
             }
+            // Best-effort live pool lookup so the Mcap-range column has a
+            // reference point (and bin_step for the price ratios) even when
+            // Sage didn't pass entry_mcap / bin_step at deploy or the
+            // position pre-dates that capture. Pool discovery caches ~1 min
+            // so the extra call is cheap in a poll loop.
+            let currentMcap: number | null = null;
+            let livePoolBinStep: number | null = null;
+            let liveHolders: number | null = null;
+            let liveOrganic: number | null = null;
+            const poolAddr = (op as { pool?: string | null }).pool ?? null;
+            if (poolAddr) {
+              try {
+                const poolDetail = await ctx.market.pools.getPoolDetail(poolAddr);
+                if (poolDetail) {
+                  currentMcap = poolDetail.mcap ?? null;
+                  livePoolBinStep = poolDetail.bin_step ?? null;
+                  liveHolders = poolDetail.holders ?? null;
+                  liveOrganic = poolDetail.organic_score ?? null;
+                }
+              } catch {
+                // non-fatal
+              }
+            }
+            // Base-mint token info as a second-chance fallback for mcap.
+            if (currentMcap == null) {
+              const baseMint = (op as { base_mint?: string | null }).base_mint ?? null;
+              if (baseMint) {
+                try {
+                  const info = await ctx.market.tokenInfo.getInfo(baseMint);
+                  currentMcap = info.mcap ?? null;
+                } catch {
+                  // non-fatal
+                }
+              }
+            }
             return {
               ...op,
               ...(derivedPnlUsd != null ? { pnl_usd: derivedPnlUsd } : {}),
@@ -129,12 +164,13 @@ export async function handleRequest(
               amount_sol_initial: tracked.amount_sol,
               initial_value_usd: tracked.initial_value_usd ?? null,
               entry_mcap: tracked.entry_mcap ?? null,
-              holders_at_entry: tracked.holders_at_entry ?? null,
+              current_mcap: currentMcap,
+              holders_at_entry: tracked.holders_at_entry ?? liveHolders,
               smart_wallets_present: tracked.smart_wallets_present ?? null,
-              bin_step: tracked.bin_step ?? null,
+              bin_step: tracked.bin_step ?? livePoolBinStep,
               volatility: tracked.volatility ?? null,
               fee_tvl_ratio: tracked.fee_tvl_ratio ?? null,
-              organic_score: tracked.organic_score ?? null,
+              organic_score: tracked.organic_score ?? liveOrganic,
               active_bin_at_deploy: tracked.active_bin_at_deploy ?? null,
               peak_pnl_pct: tracked.peak_pnl_pct ?? null,
             };
