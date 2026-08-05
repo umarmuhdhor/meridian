@@ -105,8 +105,23 @@ export async function handleRequest(
             const ageMinutes = Number.isFinite(deployedMs)
               ? Math.max(0, Math.round((nowMs - deployedMs) / 60_000))
               : (op as { age_minutes?: number | null }).age_minutes ?? null;
+            // Derive pnl_usd from total_value_usd × pnl_pct so the UI has a
+            // dollar figure. On-chain client only supplies pnl_pct +
+            // total_value_usd; prefer (total - initial) when tracked has
+            // initial_value_usd, else back it out algebraically:
+            //   entry = total / (1 + pnl_pct/100)
+            //   pnl_usd = total - entry = total × pnl_pct / (100 + pnl_pct)
+            const totalUsd = (op as { total_value_usd?: number | null }).total_value_usd ?? null;
+            const pnlPct = (op as { pnl_pct?: number | null }).pnl_pct ?? null;
+            let derivedPnlUsd: number | null = null;
+            if (totalUsd != null && tracked.initial_value_usd != null) {
+              derivedPnlUsd = Math.round((totalUsd - tracked.initial_value_usd) * 100) / 100;
+            } else if (totalUsd != null && pnlPct != null && 100 + pnlPct !== 0) {
+              derivedPnlUsd = Math.round(((totalUsd * pnlPct) / (100 + pnlPct)) * 100) / 100;
+            }
             return {
               ...op,
+              ...(derivedPnlUsd != null ? { pnl_usd: derivedPnlUsd } : {}),
               pool_name: tracked.pool_name ?? (op as { pool_name?: string | null }).pool_name ?? null,
               strategy: tracked.strategy ?? (op as { strategy?: string }).strategy,
               deployed_at: tracked.deployed_at,

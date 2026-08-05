@@ -157,7 +157,7 @@ function OpenPositions() {
               <th className="w-8 px-3 py-2.5" />
               <th className="px-3 py-2.5 font-medium">Pool</th>
               <th className="px-3 py-2.5 font-medium">Strategy</th>
-              <th className="px-3 py-2.5 text-right font-medium">Range</th>
+              <th className="px-3 py-2.5 text-right font-medium">Mcap range</th>
               <th className="px-3 py-2.5 text-right font-medium">PnL %</th>
               <th className="px-3 py-2.5 text-right font-medium">PnL $</th>
               <th className="px-3 py-2.5 text-right font-medium">Fee</th>
@@ -201,21 +201,52 @@ function OpenPositions() {
                       <Address value={p.position} chars={4} />
                     </td>
                     <td className="px-3 py-2.5 text-text-secondary">{p.strategy || "-"}</td>
-                    <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum">
-                      {binRange(p.lower_bin ?? null, p.upper_bin ?? null)}
+                    <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum" title={binRange(p.lower_bin ?? null, p.upper_bin ?? null)}>
+                      {(() => {
+                        // Compact mcap range: entry_mcap × price ratio at lower/upper bin.
+                        const ref = p.active_bin_at_deploy ?? p.upper_bin ?? null;
+                        const lowerR = binPriceRatio(p.lower_bin ?? null, ref, p.bin_step ?? null);
+                        const upperR = binPriceRatio(p.upper_bin ?? null, ref, p.bin_step ?? null);
+                        const lo = p.entry_mcap != null && lowerR != null ? p.entry_mcap * lowerR : null;
+                        const hi = p.entry_mcap != null && upperR != null ? p.entry_mcap * upperR : null;
+                        if (lo != null && hi != null) return `${compact(lo)} → ${compact(hi)}`;
+                        // Fallback to bin range for legacy positions with no entry_mcap / bin_step yet.
+                        return binRange(p.lower_bin ?? null, p.upper_bin ?? null);
+                      })()}
                     </td>
                     <td className={`px-3 py-2.5 text-right font-mono tnum ${pnlColorClass(p.pnl_pct)}`}>
                       {formatPnlPct(p.pnl_pct)}
                       {p.peak_pnl_pct != null && <div className="text-[11px] text-text-tertiary">peak {formatPnlPct(p.peak_pnl_pct)}</div>}
                     </td>
-                    <td className={`px-3 py-2.5 text-right font-mono tnum ${pnlColorClass(p.pnl_usd)}`}>{formatPnlUsd(p.pnl_usd)}</td>
-                    <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum">{formatUsd(p.unclaimed_fees_usd)}</td>
-                    <td
-                      className={`px-3 py-2.5 text-right font-mono tnum ${pnlColorClass((p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0))}`}
-                    >
-                      {formatPnlUsd((p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0))}
-                    </td>
-                    <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum">{formatDuration(p.age_minutes)}</td>
+                    {(() => {
+                      const derivedPnlUsd =
+                        p.pnl_usd ??
+                        (p.total_value_usd != null && p.pnl_pct != null && 100 + p.pnl_pct !== 0
+                          ? (p.total_value_usd * p.pnl_pct) / (100 + p.pnl_pct)
+                          : null);
+                      const derivedAge =
+                        p.age_minutes ??
+                        (p.deployed_at
+                          ? Math.max(0, Math.round((Date.now() - Date.parse(p.deployed_at)) / 60_000))
+                          : null);
+                      const net = (derivedPnlUsd ?? 0) + (p.unclaimed_fees_usd ?? 0);
+                      return (
+                        <>
+                          <td className={`px-3 py-2.5 text-right font-mono tnum ${pnlColorClass(derivedPnlUsd)}`}>
+                            {formatPnlUsd(derivedPnlUsd)}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum">
+                            {formatUsd(p.unclaimed_fees_usd)}
+                          </td>
+                          <td className={`px-3 py-2.5 text-right font-mono tnum ${pnlColorClass(net)}`}>
+                            {formatPnlUsd(net)}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum">
+                            {formatDuration(derivedAge)}
+                          </td>
+                        </>
+                      );
+                    })()}
                     <td className="px-3 py-2.5">{rowStatus(p)}</td>
                     <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                       <PositionActions p={p} />
