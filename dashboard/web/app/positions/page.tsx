@@ -57,7 +57,21 @@ function OpenPositionDetail({ p }: { p: Position }) {
   const minMcap = p.entry_mcap != null && lowerRatio != null ? p.entry_mcap * lowerRatio : null;
   const maxMcap = p.entry_mcap != null && upperRatio != null ? p.entry_mcap * upperRatio : null;
   const nowMcap = p.entry_mcap != null && nowRatio != null ? p.entry_mcap * nowRatio : null;
+
+  // Always derive age from deployed_at when present — server's age_minutes may
+  // lag by a poll cycle, and this gives us fresh values on every render.
   const deployedTs = p.deployed_at ? Date.parse(p.deployed_at) : NaN;
+  const derivedAge = Number.isFinite(deployedTs)
+    ? Math.max(0, Math.round((Date.now() - deployedTs) / 60_000))
+    : p.age_minutes ?? null;
+
+  // Prefer server pnl_usd; algebraic fallback for older responses.
+  const derivedPnlUsd =
+    p.pnl_usd ??
+    (p.total_value_usd != null && p.pnl_pct != null && 100 + p.pnl_pct !== 0
+      ? (p.total_value_usd * p.pnl_pct) / (100 + p.pnl_pct)
+      : null);
+  const netUsd = (derivedPnlUsd ?? 0) + (p.unclaimed_fees_usd ?? 0);
 
   return (
     <div className="flex flex-col gap-3 border-t border-border bg-surface-1 px-4 py-3">
@@ -66,7 +80,12 @@ function OpenPositionDetail({ p }: { p: Position }) {
           label="Deployed at"
           value={
             Number.isFinite(deployedTs) ? (
-              <span title={absoluteTime(deployedTs)}>{shortDateTime(deployedTs)}</span>
+              <span title={absoluteTime(deployedTs)}>
+                {shortDateTime(deployedTs)}
+                {derivedAge != null && (
+                  <span className="ml-1 text-text-tertiary">({formatDuration(derivedAge)})</span>
+                )}
+              </span>
             ) : (
               DASH
             )
@@ -76,12 +95,16 @@ function OpenPositionDetail({ p }: { p: Position }) {
         <DetailItem label="Entry value" value={formatUsd(p.initial_value_usd ?? null)} />
         <DetailItem label="Current value" value={formatUsd(p.total_value_usd ?? null)} />
         <DetailItem
+          label="PnL $"
+          value={<span className={pnlColorClass(derivedPnlUsd)}>{formatPnlUsd(derivedPnlUsd)}</span>}
+        />
+        <DetailItem
+          label="Fees earned"
+          value={formatUsd(p.unclaimed_fees_usd ?? null)}
+        />
+        <DetailItem
           label="Net PnL (PnL + fees)"
-          value={
-            <span className={pnlColorClass((p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0))}>
-              {formatPnlUsd((p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0))}
-            </span>
-          }
+          value={<span className={pnlColorClass(netUsd)}>{formatPnlUsd(netUsd)}</span>}
         />
         <DetailItem label="Range (bins)" value={binRange(p.lower_bin ?? null, p.upper_bin ?? null)} />
         <DetailItem
