@@ -19,12 +19,28 @@ export function trackDeployedPosition(): PostHook<
     volatility?: number | undefined;
     fee_tvl_ratio?: number | undefined;
     organic_score?: number | undefined;
+    mcap?: number | undefined;
+    holders?: number | undefined;
+    smart_wallets_present?: boolean | undefined;
   },
   DeployResult
 > {
   return async (args, result, ctx) => {
     if (!result.success || !result.position_address) return;
     const now = ctx.clock.now().toISOString();
+    // Prefer SOL price × amount as a cheap USD estimate — better than a null
+    // seed and doesn't require an extra chain hop. Falls back to null if the
+    // wallet balance snapshot fails (RPC hiccup, tests). The management cycle
+    // overwrites this with the live total_value_usd on next refresh.
+    let initialValueUsd: number | null = null;
+    try {
+      const wallet = await ctx.chain.getWalletBalance();
+      if (wallet?.sol_price != null && result.amount_sol != null) {
+        initialValueUsd = Math.round(result.amount_sol * wallet.sol_price * 100) / 100;
+      }
+    } catch {
+      // non-fatal
+    }
     const pos: TrackedPosition = {
       position: result.position_address,
       pool: result.pool_address ?? args.pool_address,
@@ -39,7 +55,10 @@ export function trackDeployedPosition(): PostHook<
       fee_tvl_ratio: args.fee_tvl_ratio ?? null,
       initial_fee_tvl_24h: args.fee_tvl_ratio ?? null,
       organic_score: args.organic_score ?? null,
-      initial_value_usd: null,
+      initial_value_usd: initialValueUsd,
+      entry_mcap: args.mcap ?? null,
+      holders_at_entry: args.holders ?? null,
+      smart_wallets_present: args.smart_wallets_present ?? null,
       deployed_at: now,
       out_of_range_since: null,
       last_claim_at: null,
@@ -55,6 +74,8 @@ export function trackDeployedPosition(): PostHook<
     ctx.logger.info("track-position", `tracked new position ${result.position_address.slice(0, 8)}`, {
       pool: pos.pool.slice(0, 8),
       strategy: pos.strategy,
+      entry_mcap: pos.entry_mcap,
+      holders_at_entry: pos.holders_at_entry,
     });
   };
 }

@@ -31,6 +31,24 @@ export const PerformanceRecordSchema = z
     minutes_in_range: z.number().int().nonnegative().optional(),
     close_reason: z.string(),
     amount_sol: z.number().optional(),
+    /** Copied from TrackedPosition so the history row can render without JOINs. */
+    strategy: z.enum(["spot", "curve", "bid_ask"]).optional(),
+    bin_range: z
+      .object({ min: z.number().int(), max: z.number().int() })
+      .partial()
+      .optional(),
+    bin_step: z.number().int().positive().optional(),
+    volatility: z.number().nullable().optional(),
+    fee_tvl_ratio: z.number().nullable().optional(),
+    organic_score: z.number().nullable().optional(),
+    /** Market-cap snapshot at deploy time and at close time — for the "mcap in → out" column. */
+    entry_mcap: z.number().nullable().optional(),
+    exit_mcap: z.number().nullable().optional(),
+    /** Base-mint context captured at deploy for later diagnostics. */
+    holders_at_entry: z.number().int().nonnegative().nullable().optional(),
+    smart_wallets_present: z.boolean().nullable().optional(),
+    /** Deterministic close_at time (ISO) so the UI can render without inferring from minutes_held. */
+    closed_at: z.string().nullable().optional(),
     signal_snapshot: z.record(z.string(), z.unknown()).nullable().optional(),
     recorded_at: z.string(),
   })

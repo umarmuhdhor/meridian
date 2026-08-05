@@ -84,10 +84,53 @@ export async function handleRequest(
     let force = url.searchParams.get("force") === "1";
     if (force && Date.now() - _lastForce < 10_000) force = false; // throttle
     if (force) _lastForce = Date.now();
-    const r = await ctx.chain
+    const rRaw = await ctx.chain
       .getMyPositions({ force })
       .catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
-    return json(res, 200, r);
+
+    // Enrich each on-chain position with tracked-side context (strategy,
+    // deployed_at, entry_mcap, holders_at_entry, initial_value_usd,
+    // volatility, fee_tvl_ratio, organic_score, bin_step,
+    // active_bin_at_deploy, smart_wallets_present, pool_name) so the
+    // Positions UI can render the expanded detail row without a second fetch.
+    if (rRaw && typeof rRaw === "object" && "positions" in rRaw && Array.isArray(rRaw.positions)) {
+      const merged = await Promise.all(
+        rRaw.positions.map(async (op) => {
+          if (!op || typeof op !== "object" || !("position" in op) || typeof op.position !== "string") return op;
+          try {
+            const tracked = await ctx.repos.positions.get(op.position);
+            if (!tracked) return op;
+            const nowMs = ctx.clock.now().getTime();
+            const deployedMs = Date.parse(tracked.deployed_at);
+            const ageMinutes = Number.isFinite(deployedMs)
+              ? Math.max(0, Math.round((nowMs - deployedMs) / 60_000))
+              : (op as { age_minutes?: number | null }).age_minutes ?? null;
+            return {
+              ...op,
+              pool_name: tracked.pool_name ?? (op as { pool_name?: string | null }).pool_name ?? null,
+              strategy: tracked.strategy ?? (op as { strategy?: string }).strategy,
+              deployed_at: tracked.deployed_at,
+              age_minutes: ageMinutes,
+              amount_sol_initial: tracked.amount_sol,
+              initial_value_usd: tracked.initial_value_usd ?? null,
+              entry_mcap: tracked.entry_mcap ?? null,
+              holders_at_entry: tracked.holders_at_entry ?? null,
+              smart_wallets_present: tracked.smart_wallets_present ?? null,
+              bin_step: tracked.bin_step ?? null,
+              volatility: tracked.volatility ?? null,
+              fee_tvl_ratio: tracked.fee_tvl_ratio ?? null,
+              organic_score: tracked.organic_score ?? null,
+              active_bin_at_deploy: tracked.active_bin_at_deploy ?? null,
+              peak_pnl_pct: tracked.peak_pnl_pct ?? null,
+            };
+          } catch {
+            return op;
+          }
+        }),
+      );
+      return json(res, 200, { ...rRaw, positions: merged });
+    }
+    return json(res, 200, rRaw);
   }
 
   // ── GET /events (SSE; piggybacks poller cache, no new RPC — §8.7/#8) ──

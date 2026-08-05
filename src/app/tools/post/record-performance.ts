@@ -8,6 +8,13 @@ import type { PerformanceRecord } from "../../../domain/schemas/lesson.js";
  * fees_usd_24h / win_rate_pct_24h) is permanently empty — nothing else
  * calls `repos.lessons.appendPerformance`.
  *
+ * Copies every tracked-side context field (strategy, bin_range, bin_step,
+ * volatility, fee_tvl_ratio, organic_score, entry_mcap, holders_at_entry,
+ * smart_wallets_present) into the record so the Positions history row can
+ * render without needing a JOIN against state.json (which prunes closed
+ * positions on cleanup). Fetches exit_mcap via the TokenInfo port —
+ * best-effort, null if the lookup fails.
+ *
  * Non-fatal: hook errors are swallowed by executeTool.
  */
 export const recordPerformanceHook: PostHook<
@@ -46,6 +53,25 @@ export const recordPerformanceHook: PostHook<
     ? Math.max(0, Math.round((now.getTime() - deployedAtMs) / 60_000))
     : undefined;
 
+  // Exit-mcap lookup — best-effort. TokenInfo tends to be cached (~1 min TTL)
+  // so this rarely hits the network, and a failure here should not gate the
+  // write.
+  let exitMcap: number | null = null;
+  const baseMint = result.base_mint ?? null;
+  if (baseMint) {
+    try {
+      const info = await ctx.market.tokenInfo.getInfo(baseMint);
+      exitMcap = info.mcap ?? null;
+    } catch {
+      // non-fatal
+    }
+  }
+
+  const binRange =
+    tracked?.bin_range?.lower_bin != null && tracked?.bin_range?.upper_bin != null
+      ? { min: tracked.bin_range.lower_bin, max: tracked.bin_range.upper_bin }
+      : undefined;
+
   const perf: PerformanceRecord = {
     position: args.position_address,
     pool: result.pool_address,
@@ -58,6 +84,20 @@ export const recordPerformanceHook: PostHook<
     ...(minutesHeld !== undefined ? { minutes_held: minutesHeld } : {}),
     close_reason: args.reason,
     ...(amountSol != null ? { amount_sol: amountSol } : {}),
+    // ── copied from TrackedPosition so the row renders standalone ──
+    ...(tracked?.strategy ? { strategy: tracked.strategy } : {}),
+    ...(binRange ? { bin_range: binRange } : {}),
+    ...(tracked?.bin_step != null ? { bin_step: tracked.bin_step } : {}),
+    ...(tracked?.volatility != null ? { volatility: tracked.volatility } : {}),
+    ...(tracked?.fee_tvl_ratio != null ? { fee_tvl_ratio: tracked.fee_tvl_ratio } : {}),
+    ...(tracked?.organic_score != null ? { organic_score: tracked.organic_score } : {}),
+    ...(tracked?.entry_mcap != null ? { entry_mcap: tracked.entry_mcap } : {}),
+    ...(exitMcap != null ? { exit_mcap: exitMcap } : {}),
+    ...(tracked?.holders_at_entry != null ? { holders_at_entry: tracked.holders_at_entry } : {}),
+    ...(tracked?.smart_wallets_present != null
+      ? { smart_wallets_present: tracked.smart_wallets_present }
+      : {}),
+    closed_at: now.toISOString(),
     recorded_at: now.toISOString(),
   };
 
@@ -68,6 +108,9 @@ export const recordPerformanceHook: PostHook<
       pnl_usd: perf.pnl_usd,
       fees_usd: perf.fees_earned_usd,
       reason: args.reason,
+      strategy: perf.strategy,
+      entry_mcap: perf.entry_mcap,
+      exit_mcap: perf.exit_mcap,
     });
   } catch (err) {
     ctx.logger.warn("perf", "appendPerformance failed", {

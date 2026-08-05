@@ -145,7 +145,10 @@ function formatCandidatesBlock(
     .map((p, i) => {
       const feeTvl = p.pool.fee_active_tvl_ratio ?? p.pool.fee_tvl_ratio ?? 0;
       const vol = p.pool.volume_window;
-      const base = `  [${i + 1}] ${p.pool.name}  pool=${p.pool.pool_address}  score=${p.score.toFixed(0)}  fee/aTVL=${(feeTvl * 100).toFixed(2)}%  vol=$${vol.toFixed(0)}  organic=${p.pool.organic_score ?? "?"}`;
+      const mcap = p.pool.mcap != null ? ` mcap=$${p.pool.mcap.toFixed(0)}` : "";
+      const holders = p.pool.holders != null ? ` holders=${p.pool.holders}` : "";
+      const binStep = p.pool.bin_step != null ? ` bin_step=${p.pool.bin_step}` : "";
+      const base = `  [${i + 1}] ${p.pool.name}  pool=${p.pool.pool_address}  score=${p.score.toFixed(0)}  fee/aTVL=${(feeTvl * 100).toFixed(2)}%  vol=$${vol.toFixed(0)}  organic=${p.pool.organic_score ?? "?"}${mcap}${holders}${binStep}`;
       const d = diligence?.[i];
       if (!d) return base;
       const parts: string[] = [];
@@ -442,6 +445,10 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       "config value), bins_below (given below), bins_above=0, and cycle_id (verbatim from the",
       "task). Passing pool_name is REQUIRED — decision-log cards read address prefixes as",
       "gibberish; pool_name is what shows up in the dashboard.",
+      "ALSO pass the candidate's diligence context so the position history renders",
+      "properly: mcap (from the candidate line), holders (from diligence: holders=N),",
+      "volatility, fee_tvl_ratio, organic_score, bin_step (all present on the candidate).",
+      "Omit any field that is truly unknown — do not fabricate.",
       "",
       "STRATEGY SELECTION — MANDATORY per cycle. Pick from {spot, curve, bid_ask} based on the",
       "candidate's volatility and thesis. Never copy the config default blindly.",

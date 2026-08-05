@@ -22,6 +22,9 @@ const ArgsSchema = z.object({
   volatility: z.number().optional(),
   fee_tvl_ratio: z.number().optional(),
   organic_score: z.number().optional(),
+  mcap: z.number().optional(),
+  holders: z.number().int().nonnegative().optional(),
+  smart_wallets_present: z.boolean().optional(),
 });
 
 /**
@@ -62,6 +65,9 @@ export const deployPositionTool = defineTool({
       volatility: args.volatility ?? null,
       fee_tvl_ratio: args.fee_tvl_ratio ?? null,
       organic_score: args.organic_score ?? null,
+      mcap: args.mcap ?? null,
+      holders: args.holders ?? null,
+      smart_wallets_present: args.smart_wallets_present ?? null,
     };
   },
 });

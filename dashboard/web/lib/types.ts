@@ -23,11 +23,23 @@ export interface Position {
   pnl_pct_derived?: number;
   pnl_pct_diff?: number;
   pnl_pct_suspicious?: boolean;
-  peak_pnl_pct?: number;
-  fee_per_tvl_24h?: number;
-  age_minutes?: number;
+  peak_pnl_pct?: number | null;
+  fee_per_tvl_24h?: number | null;
+  age_minutes?: number | null;
   minutes_out_of_range?: number;
   instruction?: string | null;
+  // ── merged from TrackedPosition by the bridge (may be absent if untracked) ──
+  deployed_at?: string | null;
+  amount_sol_initial?: number | null;
+  initial_value_usd?: number | null;
+  entry_mcap?: number | null;
+  holders_at_entry?: number | null;
+  smart_wallets_present?: boolean | null;
+  bin_step?: number | null;
+  volatility?: number | null;
+  fee_tvl_ratio?: number | null;
+  organic_score?: number | null;
+  active_bin_at_deploy?: number | null;
 }
 
 export interface PositionsResponse {

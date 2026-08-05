@@ -52,6 +52,12 @@ export const DeployArgsSchema = z.object({
   volatility: z.number().optional(),
   fee_tvl_ratio: z.number().optional(),
   organic_score: z.number().optional(),
+  /** Base-token market cap at deploy time (USD) — snapshotted for post-mortem. */
+  mcap: z.number().optional(),
+  /** Base-token holder count at deploy time. */
+  holders: z.number().int().nonnegative().optional(),
+  /** Smart-wallet flag at deploy time. */
+  smart_wallets_present: z.boolean().optional(),
 });
 export type DeployArgs = z.infer<typeof DeployArgsSchema>;
 
@@ -75,6 +81,9 @@ export const DeployResultSchema = z.object({
   volatility: z.number().nullable().optional(),
   fee_tvl_ratio: z.number().nullable().optional(),
   organic_score: z.number().nullable().optional(),
+  mcap: z.number().nullable().optional(),
+  holders: z.number().int().nonnegative().nullable().optional(),
+  smart_wallets_present: z.boolean().nullable().optional(),
 });
 export type DeployResult = z.infer<typeof DeployResultSchema>;
 

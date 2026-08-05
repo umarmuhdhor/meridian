@@ -16,6 +16,8 @@ import {
   absoluteTime,
   shortDateTime,
   compact,
+  binPriceRatio,
+  formatSignedPct,
   DASH,
 } from "@/lib/format";
 import type { PerformanceEntry, Decision } from "@/lib/types";
@@ -76,6 +78,20 @@ function RowDetail({ row }: { row: HistoryRow }) {
   const range = perf.bin_range;
   const { openTs, closeTs } = openCloseTimes(row);
 
+  // Reference bin: the active bin at deploy (top of range for single-side SOL).
+  // Falls back to `range.max` (Meridian's convention: active=upper on entry).
+  const refBin =
+    (typeof (perf as { active_bin_at_deploy?: number }).active_bin_at_deploy === "number"
+      ? (perf as { active_bin_at_deploy?: number }).active_bin_at_deploy
+      : range?.max) ?? null;
+  const lowerRatio = binPriceRatio(range?.min ?? null, refBin, perf.bin_step ?? null);
+  const upperRatio = binPriceRatio(range?.max ?? null, refBin, perf.bin_step ?? null);
+  const lowerPct = lowerRatio != null ? (lowerRatio - 1) * 100 : null;
+  const upperPct = upperRatio != null ? (upperRatio - 1) * 100 : null;
+
+  const minMcap = perf.entry_mcap != null && lowerRatio != null ? perf.entry_mcap * lowerRatio : null;
+  const maxMcap = perf.entry_mcap != null && upperRatio != null ? perf.entry_mcap * upperRatio : null;
+
   return (
     <div className="flex flex-col gap-3 border-t border-border bg-surface-1 px-4 py-3">
       <div>
@@ -105,14 +121,50 @@ function RowDetail({ row }: { row: HistoryRow }) {
         <DetailItem label="Range efficiency" value={formatPct(perf.range_efficiency, 1)} />
         <DetailItem label="Entry value" value={formatUsd(perf.initial_value_usd)} />
         <DetailItem label="Exit value" value={formatUsd(perf.final_value_usd)} />
-        <DetailItem label="Mcap entry → exit" value={`${compact(perf.entry_mcap)} → ${compact(perf.exit_mcap)}`} />
+        <DetailItem label="Mcap in" value={compact(perf.entry_mcap)} />
+        <DetailItem label="Mcap out" value={compact(perf.exit_mcap)} />
+        <DetailItem
+          label="Min price range"
+          value={lowerPct != null ? `${formatSignedPct(lowerPct)} vs entry` : DASH}
+        />
+        <DetailItem
+          label="Max price range"
+          value={upperPct != null ? `${formatSignedPct(upperPct)} vs entry` : DASH}
+        />
+        <DetailItem label="Min mcap range" value={compact(minMcap)} />
+        <DetailItem label="Max mcap range" value={compact(maxMcap)} />
+        <DetailItem
+          label="Fee tier · bin step"
+          value={
+            perf.bin_step != null
+              ? `${(perf.bin_step / 100).toFixed(2)}% · ${perf.bin_step} bps`
+              : DASH
+          }
+        />
         <DetailItem label="Organic score" value={num(snap.organic_score) ?? perf.organic_score ?? DASH} />
         <DetailItem label="Fee/TVL at entry" value={perf.fee_tvl_ratio != null ? perf.fee_tvl_ratio.toFixed(4) : DASH} />
         <DetailItem label="Volatility" value={perf.volatility != null ? perf.volatility.toFixed(2) : DASH} />
-        <DetailItem label="Holders at entry" value={num(snap.holder_count) != null ? compact(num(snap.holder_count)) : DASH} />
+        <DetailItem
+          label="Holders at entry"
+          value={
+            (() => {
+              const h =
+                (perf as { holders_at_entry?: number }).holders_at_entry ??
+                (num(snap.holder_count) as number | null);
+              return h != null ? compact(h) : DASH;
+            })()
+          }
+        />
         <DetailItem
           label="Smart wallets"
-          value={snap.smart_wallets_present == null ? DASH : snap.smart_wallets_present ? "present" : "none"}
+          value={
+            (() => {
+              const s =
+                (perf as { smart_wallets_present?: boolean }).smart_wallets_present ??
+                (snap.smart_wallets_present as boolean | null | undefined);
+              return s == null ? DASH : s ? "present" : "none";
+            })()
+          }
         />
       </div>
 

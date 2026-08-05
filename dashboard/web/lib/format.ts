@@ -80,3 +80,24 @@ export function formatDuration(minutes: number | null | undefined): string {
 
 export const binRange = (lo: number | null, hi: number | null): string =>
   lo == null || hi == null ? DASH : `[${lo}, ${hi}]`;
+
+/**
+ * Meteora DLMM bin-to-price ratio relative to a reference bin.
+ * Returns a multiplier: 1.0 = same price as the reference bin, 1.5 = 50% higher.
+ * Uses the DLMM formula `price = (1 + bin_step_bps/10_000)^binId` — the ratio
+ * between two bins is `factor^(binA - binB)`. Returns null on missing inputs.
+ */
+export function binPriceRatio(
+  binId: number | null | undefined,
+  refBinId: number | null | undefined,
+  binStep: number | null | undefined,
+): number | null {
+  if (binId == null || refBinId == null || binStep == null) return null;
+  if (!Number.isFinite(binId) || !Number.isFinite(refBinId) || !Number.isFinite(binStep)) return null;
+  if (binStep <= 0) return null;
+  return Math.pow(1 + binStep / 10_000, binId - refBinId);
+}
+
+/** Signed %-change format for range boundary labels: "-72.9%", "+15.0%", "0.0%". */
+export const formatSignedPct = (n: number | null | undefined, d = 1): string =>
+  n == null || !Number.isFinite(n) ? DASH : `${n > 0 ? "+" : ""}${n.toFixed(d)}%`;
