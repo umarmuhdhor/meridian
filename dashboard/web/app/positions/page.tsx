@@ -75,6 +75,14 @@ function OpenPositionDetail({ p }: { p: Position }) {
         <DetailItem label="Size" value={formatSol(p.amount_sol_initial ?? null, 2)} />
         <DetailItem label="Entry value" value={formatUsd(p.initial_value_usd ?? null)} />
         <DetailItem label="Current value" value={formatUsd(p.total_value_usd ?? null)} />
+        <DetailItem
+          label="Net PnL (PnL + fees)"
+          value={
+            <span className={pnlColorClass((p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0))}>
+              {formatPnlUsd((p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0))}
+            </span>
+          }
+        />
         <DetailItem label="Range (bins)" value={binRange(p.lower_bin ?? null, p.upper_bin ?? null)} />
         <DetailItem
           label="Active bin"
@@ -153,6 +161,7 @@ function OpenPositions() {
               <th className="px-3 py-2.5 text-right font-medium">PnL %</th>
               <th className="px-3 py-2.5 text-right font-medium">PnL $</th>
               <th className="px-3 py-2.5 text-right font-medium">Fee</th>
+              <th className="px-3 py-2.5 text-right font-medium">Net PnL</th>
               <th className="px-3 py-2.5 text-right font-medium">Age</th>
               <th className="px-3 py-2.5 font-medium">Status</th>
               <th className="px-3 py-2.5 font-medium">Actions</th>
@@ -201,6 +210,11 @@ function OpenPositions() {
                     </td>
                     <td className={`px-3 py-2.5 text-right font-mono tnum ${pnlColorClass(p.pnl_usd)}`}>{formatPnlUsd(p.pnl_usd)}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum">{formatUsd(p.unclaimed_fees_usd)}</td>
+                    <td
+                      className={`px-3 py-2.5 text-right font-mono tnum ${pnlColorClass((p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0))}`}
+                    >
+                      {formatPnlUsd((p.pnl_usd ?? 0) + (p.unclaimed_fees_usd ?? 0))}
+                    </td>
                     <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum">{formatDuration(p.age_minutes)}</td>
                     <td className="px-3 py-2.5">{rowStatus(p)}</td>
                     <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
@@ -209,7 +223,7 @@ function OpenPositions() {
                   </tr>
                   {isOpen && (
                     <tr>
-                      <td colSpan={10} className="p-0">
+                      <td colSpan={11} className="p-0">
                         <OpenPositionDetail p={p} />
                       </td>
                     </tr>

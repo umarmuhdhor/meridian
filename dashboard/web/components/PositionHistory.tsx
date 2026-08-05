@@ -121,6 +121,14 @@ function RowDetail({ row }: { row: HistoryRow }) {
         <DetailItem label="Range efficiency" value={formatPct(perf.range_efficiency, 1)} />
         <DetailItem label="Entry value" value={formatUsd(perf.initial_value_usd)} />
         <DetailItem label="Exit value" value={formatUsd(perf.final_value_usd)} />
+        <DetailItem
+          label="Net PnL (PnL + fees)"
+          value={
+            <span className={pnlColorClass((perf.pnl_usd ?? 0) + (perf.fees_earned_usd ?? 0))}>
+              {formatPnlUsd((perf.pnl_usd ?? 0) + (perf.fees_earned_usd ?? 0))}
+            </span>
+          }
+        />
         <DetailItem label="Mcap in" value={compact(perf.entry_mcap)} />
         <DetailItem label="Mcap out" value={compact(perf.exit_mcap)} />
         <DetailItem
@@ -203,7 +211,7 @@ export function PositionHistory({
     const wins = rows.filter((r) => (r.perf.pnl_pct ?? 0) > 0).length;
     const totalUsd = rows.reduce((s, r) => s + (r.perf.pnl_usd ?? 0), 0);
     const totalFees = rows.reduce((s, r) => s + (r.perf.fees_earned_usd ?? 0), 0);
-    return { count: rows.length, wins, totalUsd, totalFees };
+    return { count: rows.length, wins, totalUsd, totalFees, netUsd: totalUsd + totalFees };
   }, [rows]);
 
   if (rows.length === 0) {
@@ -218,11 +226,12 @@ export function PositionHistory({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         <SummaryStat label="Closed trades" value={String(stats.count)} />
         <SummaryStat label="Win rate" value={formatPct((stats.wins / stats.count) * 100, 1)} />
         <SummaryStat label="Total PnL" value={formatPnlUsd(stats.totalUsd)} className={pnlColorClass(stats.totalUsd)} />
         <SummaryStat label="Fees earned" value={formatUsd(stats.totalFees)} />
+        <SummaryStat label="Net PnL (PnL + fees)" value={formatPnlUsd(stats.netUsd)} className={pnlColorClass(stats.netUsd)} />
       </div>
 
       {/* Desktop table */}
@@ -236,6 +245,7 @@ export function PositionHistory({
               <th className="px-3 py-2.5 text-right font-medium">PnL %</th>
               <th className="px-3 py-2.5 text-right font-medium">PnL $</th>
               <th className="px-3 py-2.5 text-right font-medium">Fees</th>
+              <th className="px-3 py-2.5 text-right font-medium">Net PnL</th>
               <th className="px-3 py-2.5 text-right font-medium">Held</th>
               <th className="px-3 py-2.5 font-medium">Close reason</th>
               <th className="px-3 py-2.5 text-right font-medium">Opened</th>
@@ -277,6 +287,11 @@ export function PositionHistory({
                     <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum">
                       {formatUsd(p.fees_earned_usd)}
                     </td>
+                    <td
+                      className={`px-3 py-2.5 text-right font-mono tnum ${pnlColorClass((p.pnl_usd ?? 0) + (p.fees_earned_usd ?? 0))}`}
+                    >
+                      {formatPnlUsd((p.pnl_usd ?? 0) + (p.fees_earned_usd ?? 0))}
+                    </td>
                     <td className="px-3 py-2.5 text-right font-mono text-text-secondary tnum">
                       {formatDuration(p.minutes_held)}
                     </td>
@@ -295,7 +310,7 @@ export function PositionHistory({
                   </tr>
                   {isOpen && (
                     <tr>
-                      <td colSpan={10} className="p-0">
+                      <td colSpan={11} className="p-0">
                         <RowDetail row={row} />
                       </td>
                     </tr>
@@ -328,6 +343,11 @@ export function PositionHistory({
                 <div className="text-right">
                   <div className={`font-mono text-[13.5px] tnum ${pnlColorClass(p.pnl_pct)}`}>{formatPnlPct(p.pnl_pct)}</div>
                   <div className={`font-mono text-[11.5px] tnum ${pnlColorClass(p.pnl_usd)}`}>{formatPnlUsd(p.pnl_usd)}</div>
+                  <div
+                    className={`font-mono text-[11px] tnum ${pnlColorClass((p.pnl_usd ?? 0) + (p.fees_earned_usd ?? 0))}`}
+                  >
+                    net {formatPnlUsd((p.pnl_usd ?? 0) + (p.fees_earned_usd ?? 0))}
+                  </div>
                 </div>
               </summary>
               <RowDetail row={row} />
