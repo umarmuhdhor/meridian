@@ -16,6 +16,38 @@ describe("getDeterministicCloseRule — 4 hard rules", () => {
     expect(r).toBeNull();
   });
 
+  it("rule 1: SUPPRESSED inside stopLossGraceMinutes window (fresh single-side IL)", () => {
+    // age 10m < grace 30m → rule 1 gated even at -95%
+    const r = getDeterministicCloseRule(
+      makeLive({ pnl_pct: -95, age_minutes: 10 }),
+      mgmt,
+    );
+    expect(r).toBeNull();
+  });
+
+  it("rule 1: FIRES once age passes stopLossGraceMinutes", () => {
+    const r = getDeterministicCloseRule(
+      makeLive({ pnl_pct: -95, age_minutes: 31 }),
+      mgmt,
+    );
+    expect(r?.rule).toBe(1);
+  });
+
+  it("rule 3 (OOR) still fires inside the stop_loss grace window", () => {
+    // 10m age (< grace) but 30m OOR → OOR trigger unaffected
+    const r = getDeterministicCloseRule(
+      makeLive({
+        pnl_pct: -95,
+        age_minutes: 10,
+        active_bin: 115,
+        upper_bin: 110,
+        minutes_out_of_range: 30,
+      }),
+      mgmt,
+    );
+    expect(r?.rule).toBe(3);
+  });
+
   it("rule 2: take profit when pnl_pct >= takeProfitPct", () => {
     const r = getDeterministicCloseRule(makeLive({ pnl_pct: 5 }), mgmt);
     expect(r).toEqual({ action: "CLOSE", rule: 2, reason: "take profit" });

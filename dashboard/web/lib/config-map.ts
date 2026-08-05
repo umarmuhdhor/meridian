@@ -91,6 +91,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
 
   // ── exit rules ──
   f("stopLossPct", "number", "exit", { unit: "%", help: "Close at this PnL loss. Negative, e.g. -50 = -50%." }),
+  f("stopLossGraceMinutes", "number", "exit", { unit: "minutes", help: "Suppress stop-loss for this many minutes after deploy — protects fresh single-side entries from opening-slippage IL. Set 0 to disable." }),
   f("takeProfitPct", "number", "exit", { unit: "%", help: "Close at this PnL gain, e.g. 5 = +5%." }),
   f("trailingTakeProfit", "boolean", "exit", { help: "Enable trailing take-profit." }),
   f("trailingTriggerPct", "number", "exit", { unit: "%", help: "Arm the trailing stop once peak PnL reaches this %." }),

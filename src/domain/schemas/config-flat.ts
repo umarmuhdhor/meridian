@@ -16,6 +16,7 @@ export const FlatUserConfigSchema = z
     // risk / management
     maxPositions: z.number().int().positive(),
     stopLossPct: z.number(),
+    stopLossGraceMinutes: z.number().int().nonnegative().default(30),
     takeProfitPct: z.number(),
     outOfRangeWaitMinutes: z.number().int().nonnegative(),
     minFeePerTvl24h: z.number().nonnegative(),

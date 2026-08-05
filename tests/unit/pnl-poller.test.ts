@@ -30,6 +30,7 @@ function mutableClock(startIso: string): Clock & { advance(ms: number): void } {
 
 const mgmt: ManagementConfig = {
   stopLossPct: -50,
+  stopLossGraceMinutes: 30,
   takeProfitPct: 5,
   outOfRangeWaitMinutes: 30,
   minFeePerTvl24h: 7,

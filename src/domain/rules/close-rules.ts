@@ -43,8 +43,19 @@ export function getDeterministicCloseRule(
 ): CloseDecision | null {
   const pnlSuspect = isPnlSuspect(position, ctx);
 
+  // Rule 1 (stop_loss) is skipped for a grace window after deploy. Single-side
+  // SOL entries land with active_bin = upper_bin, so any pump immediately puts
+  // the position OOR — and the resulting IL routinely crosses stopLossPct in
+  // the first few minutes before any fees can accumulate. Without a grace
+  // window, fresh positions on volatile memes auto-close as pure IL losses
+  // (TikTok-SOL, 2026-08-04 was −24.85% inside 1h). During the grace window
+  // rule 3 (OOR wait) still fires normally, so a runaway keeps closing on
+  // schedule; only the pnl-threshold rule waits.
+  const graceMin = managementConfig.stopLossGraceMinutes;
+  const withinGrace = graceMin > 0 && (position.age_minutes ?? 0) < graceMin;
   if (
     !pnlSuspect &&
+    !withinGrace &&
     position.pnl_pct != null &&
     position.pnl_pct <= managementConfig.stopLossPct
   ) {

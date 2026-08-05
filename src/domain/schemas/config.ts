@@ -2,6 +2,10 @@ import { z } from "zod";
 
 export const ManagementConfigSchema = z.object({
   stopLossPct: z.number(),
+  /** Minutes after deploy during which rule-1 (stop_loss) is suppressed.
+   *  Prevents opening-slippage IL from auto-closing single-side SOL entries
+   *  before fees can accumulate. 0 disables the grace window. */
+  stopLossGraceMinutes: z.number().int().nonnegative().default(30),
   takeProfitPct: z.number(),
   outOfRangeWaitMinutes: z.number().int().nonnegative(),
   minFeePerTvl24h: z.number().nonnegative(),

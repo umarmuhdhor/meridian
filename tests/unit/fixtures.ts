@@ -3,6 +3,7 @@ import type { LivePositionSnapshot, TrackedPosition } from "../../src/domain/sch
 
 export const mgmt: ManagementConfig = {
   stopLossPct: -50,
+  stopLossGraceMinutes: 30,
   takeProfitPct: 5,
   outOfRangeWaitMinutes: 30,
   minFeePerTvl24h: 7,

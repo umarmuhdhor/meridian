@@ -17,6 +17,7 @@ export function flatToNested(flat: FlatUserConfig): AppConfig {
     },
     management: {
       stopLossPct: flat.stopLossPct,
+      stopLossGraceMinutes: flat.stopLossGraceMinutes,
       takeProfitPct: flat.takeProfitPct,
       outOfRangeWaitMinutes: flat.outOfRangeWaitMinutes,
       minFeePerTvl24h: flat.minFeePerTvl24h,
