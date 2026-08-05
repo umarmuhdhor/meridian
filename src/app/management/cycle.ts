@@ -142,7 +142,50 @@ export async function runManagementCycle(deps: ManagementCycleDeps): Promise<Man
     ctx.logger.info("management", `reconciled untracked position ${p.position.slice(0, 8)} into state`);
   }
 
-  const plans = snap.positions.map((p) => planForPosition(p, ctx));
+  // Update out_of_range_since on every tracked position based on the fresh
+  // on-chain snapshot, then compute minutes_out_of_range so the deterministic
+  // rule 3 (OOR) actually has a value to compare against. Without this, the
+  // on-chain client never populates minutes_out_of_range → rule 3 sees 0 →
+  // never fires. Result was OOR positions sitting open indefinitely
+  // (2026-08-05: Doom-SOL held 24 bins past upper for hours, no close).
+  const nowMs = ctx.clock.now().getTime();
+  const oorEnrichedSnapshot = await Promise.all(
+    snap.positions.map(async (p) => {
+      const t = await ctx.repos.positions.get(p.position);
+      if (!t || t.closed) return p;
+      let oorSince = t.out_of_range_since;
+      let mutated = false;
+      if (p.in_range === false && !oorSince) {
+        oorSince = ctx.clock.now().toISOString();
+        mutated = true;
+      } else if (p.in_range === true && oorSince) {
+        oorSince = null;
+        mutated = true;
+      }
+      if (mutated) {
+        await ctx.repos.positions.upsert({ ...t, out_of_range_since: oorSince });
+      }
+      const minutesOOR =
+        oorSince != null
+          ? Math.max(0, Math.floor((nowMs - Date.parse(oorSince)) / 60_000))
+          : 0;
+      // Overlay the derived minutes_out_of_range onto the on-chain position so
+      // planForPosition → close-rules rule 3 sees it. Age is also seeded from
+      // tracked.deployed_at when the chain client left it null.
+      const derivedAge =
+        p.age_minutes ??
+        (t.deployed_at
+          ? Math.max(0, Math.floor((nowMs - Date.parse(t.deployed_at)) / 60_000))
+          : null);
+      return {
+        ...p,
+        minutes_out_of_range: minutesOOR,
+        ...(derivedAge != null ? { age_minutes: derivedAge } : {}),
+      };
+    }),
+  );
+
+  const plans = oorEnrichedSnapshot.map((p) => planForPosition(p, ctx));
   const actionsList = plans.filter((p) => p.action !== "STAY");
   if (actionsList.length === 0) {
     ctx.logger.info("management", `all ${plans.length} positions STAY`);
