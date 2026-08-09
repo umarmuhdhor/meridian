@@ -13,6 +13,13 @@ import {
   formatMaxPositionsReason,
   formatNoCandidatesReason,
 } from "../../domain/format/decision-strings.js";
+import {
+  computeCandidateHistory,
+  computePortfolioAggregate,
+  formatCandidateHistoryLine,
+  formatPortfolioAggregate,
+} from "../../domain/format/candidate-history.js";
+import type { PerformanceRecord } from "../../domain/schemas/lesson.js";
 
 export interface ScreeningCycleDeps {
   ctx: AppContext;
@@ -139,8 +146,12 @@ async function enrichCandidates(
 function formatCandidatesBlock(
   picked: TopCandidatesResult["picked"],
   diligence?: readonly Diligence[],
+  performance?: readonly PerformanceRecord[],
+  now?: Date,
 ): string {
   if (!picked.length) return "  (no candidates passed)";
+  const perfHistory = performance ?? [];
+  const clock = now ?? new Date();
   return picked
     .map((p, i) => {
       const feeTvl = p.pool.fee_active_tvl_ratio ?? p.pool.fee_tvl_ratio ?? 0;
@@ -165,8 +176,15 @@ function formatCandidatesBlock(
         parts.push(`holders=${totalStr}  top10=${top10Str}  bots=${botsStr}`);
       }
       if (d.error) parts.push(`diligence_error=${d.error}`);
-      if (!parts.length) return base;
-      return `${base}\n       diligence: ${parts.join("  ")}`;
+      const history = computeCandidateHistory(
+        { pool_address: p.pool.pool_address, base_mint: p.pool.base_mint },
+        perfHistory,
+        clock,
+      );
+      const historyLine = formatCandidateHistoryLine(history);
+      const dilLine = parts.length ? `\n       diligence: ${parts.join("  ")}` : "";
+      const histLine = historyLine ? `\n       history:   ${historyLine}` : "";
+      return `${base}${dilLine}${histLine}`;
     })
     .join("\n");
 }
@@ -182,12 +200,21 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
   const { ctx, llm, registry, model } = deps;
 
   // Preflight
-  const [wallet, positionsSnap, activeStrategy, recentDecisions] = await Promise.all([
-    ctx.chain.getWalletBalance(),
-    ctx.chain.getMyPositions({ force: true }),
-    ctx.repos.strategies.getActive(),
-    ctx.repos.decisions.recent(5),
-  ]);
+  const [wallet, positionsSnap, activeStrategy, recentDecisions, recentPerformance, lessons] =
+    await Promise.all([
+      ctx.chain.getWalletBalance(),
+      ctx.chain.getMyPositions({ force: true }),
+      ctx.repos.strategies.getActive(),
+      ctx.repos.decisions.recent(5),
+      // Prior closes drive per-candidate history + portfolio-aggregate lines injected
+      // into the candidate block; last 50 is enough for meaningful buckets without
+      // bloating the prompt.
+      ctx.repos.lessons.recentPerformance(50),
+      // Pinned + recent lessons feed the LESSONS block — both for the local loop's
+      // buildSystemPrompt and (below) for the Sage system prompt, which previously
+      // never received them.
+      ctx.repos.lessons.listLessons({ limit: 20 }),
+    ]);
 
   if (positionsSnap.total_positions >= ctx.config.risk.maxPositions) {
     const shortReason = `at max positions (${positionsSnap.total_positions}/${ctx.config.risk.maxPositions})`;
@@ -293,6 +320,8 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     config: ctx.config,
     activeStrategy,
     recentDecisions,
+    recentPerformance,
+    lessons,
   });
 
   // Pre-fetch fresh diligence (rug + holder concentration) for the shortlist so
@@ -352,11 +381,20 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     return { kind: "no_deploy", picked: 0, rejection_summary: dilRejected.map((r) => `${r.kind}_pct_too_high`) };
   }
 
+  // Portfolio aggregate — bucketed win/loss stats over the last 30 closes. Shown as
+  // context, NOT a rule: the decider may still deploy against a losing bucket if the
+  // fresh diligence overrides the historical drift.
+  const portfolioAgg = computePortfolioAggregate(recentPerformance, { limit: 30 });
+  const portfolioBlock = formatPortfolioAggregate(portfolioAgg);
+  const clockNow = ctx.clock.now();
+
   const goal = [
     "SCREENING CYCLE — pick one of the following candidates and call deploy_position, or explain why none qualify.",
     "",
-    "CANDIDATES (fresh diligence included — do NOT fetch more):",
-    formatCandidatesBlock(pickedFiltered, diligence),
+    "CANDIDATES (fresh diligence + prior history included — do NOT fetch more):",
+    formatCandidatesBlock(pickedFiltered, diligence, recentPerformance, clockNow),
+    "",
+    portfolioBlock,
     "",
     `Deploy amount: ${ctx.config.management.deployAmountSol} SOL.`,
     `Strategy: choose per candidate {spot|curve|bid_ask} — spot for high-vol meme coins, curve for low-vol range-bound, bid_ask ONLY with a declared directional thesis. Config default "${ctx.config.strategy.strategy}" is a hint, not an order.`,
@@ -475,18 +513,36 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       "shows improved rug_score / holders / top10 concentration, deploying is defensible).",
       "If none qualify, reply exactly: NO DEPLOY: <reason>.",
     ].join("\n");
+    // Lessons (pinned first, then recent) — same summary shape as the local loop's
+    // buildSystemPrompt. Injected here because sageSystemPrompt is hand-written and
+    // previously carried zero lesson context, so anything the user (or a past
+    // Telegram retrospective) pinned was invisible to Sage.
+    const sagePinned = lessons.filter((l) => l.pinned).slice(0, 5);
+    const sageRecent = lessons.filter((l) => !l.pinned).slice(-5);
+    const lessonsParts: string[] = [];
+    if (sagePinned.length)
+      lessonsParts.push(`PINNED: ${sagePinned.map((l) => l.rule).join(" | ")}`);
+    if (sageRecent.length)
+      lessonsParts.push(`RECENT: ${sageRecent.map((l) => l.rule).join(" | ")}`);
+    const sageLessonsBlock = lessonsParts.length
+      ? `\n\n── LESSONS ──\n${lessonsParts.join("\n")}`
+      : "";
+    const sageSystemPromptWithLessons = sageSystemPrompt + sageLessonsBlock;
+
     const sageGoal = [
       "SCREENING CYCLE — choose one candidate and call mrd_deploy_position, or NO DEPLOY.",
       "",
-      "CANDIDATES (fresh diligence included — do NOT fetch more):",
-      formatCandidatesBlock(pickedFiltered, diligence),
+      "CANDIDATES (fresh diligence + prior history included — do NOT fetch more):",
+      formatCandidatesBlock(pickedFiltered, diligence, recentPerformance, clockNow),
+      "",
+      portfolioBlock,
       "",
       `amount_sol: ${ctx.config.management.deployAmountSol}. bins_below: ${ctx.config.strategy.binsBelow}. bins_above: 0.`,
       `strategy: CHOOSE per candidate (spot | curve | bid_ask). Config default is "${ctx.config.strategy.strategy}" — treat as a hint only. Justify the choice from the candidate's volatility before deploying. Default for meme coins is spot; use bid_ask only with a declared directional thesis.`,
     ].join("\n");
     try {
       const result = await deps.sage.decide({
-        systemPrompt: sageSystemPrompt,
+        systemPrompt: sageSystemPromptWithLessons,
         goal: sageGoal,
         sessionKey: deps.sageSessionKey ?? "meridian-trading",
         cycleId,

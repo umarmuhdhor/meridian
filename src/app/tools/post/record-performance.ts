@@ -93,6 +93,7 @@ export const recordPerformanceHook: PostHook<
     ...(tracked?.organic_score != null ? { organic_score: tracked.organic_score } : {}),
     ...(tracked?.entry_mcap != null ? { entry_mcap: tracked.entry_mcap } : {}),
     ...(exitMcap != null ? { exit_mcap: exitMcap } : {}),
+    ...(baseMint ? { base_mint: baseMint } : {}),
     ...(tracked?.holders_at_entry != null ? { holders_at_entry: tracked.holders_at_entry } : {}),
     ...(tracked?.smart_wallets_present != null
       ? { smart_wallets_present: tracked.smart_wallets_present }

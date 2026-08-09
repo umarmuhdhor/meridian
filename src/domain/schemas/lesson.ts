@@ -44,6 +44,8 @@ export const PerformanceRecordSchema = z
     /** Market-cap snapshot at deploy time and at close time — for the "mcap in → out" column. */
     entry_mcap: z.number().nullable().optional(),
     exit_mcap: z.number().nullable().optional(),
+    /** Base-mint (SPL token) address — persisted so same-token history matches across pools. */
+    base_mint: z.string().nullable().optional(),
     /** Base-mint context captured at deploy for later diagnostics. */
     holders_at_entry: z.number().int().nonnegative().nullable().optional(),
     smart_wallets_present: z.boolean().nullable().optional(),
