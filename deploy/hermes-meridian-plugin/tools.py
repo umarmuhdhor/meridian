@@ -255,3 +255,134 @@ def _handle_update_config(args: dict, **kw) -> str:
         return tool_result(post_tool("update_config", payload, confirm=True))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
+
+
+# ── retrospective / learning tools ─────────────────────────────────────────
+# Read past closes + past screening decisions so Sage can analyze patterns when
+# the user asks ("we had 3 losses in a row, learn from it"). Write a pinned
+# lesson via add_lesson so future screening cycles inject the rule automatically
+# (LESSONS block in screening/cycle.ts feeds pinned + recent 5).
+
+def _clip(n, default: int, hi: int) -> int:
+    try:
+        v = int(n)
+    except Exception:
+        return default
+    if v < 1:
+        return 1
+    if v > hi:
+        return hi
+    return v
+
+
+MRD_GET_PERFORMANCE_SCHEMA = {
+    "name": "mrd_get_performance",
+    "description": (
+        "Recent CLOSED-position performance (from lessons.json.performance). Each row: "
+        "pool, pool_name, base_mint, strategy, pnl_pct, pnl_usd, fees_earned_usd, "
+        "entry_mcap, exit_mcap, volatility, minutes_held, close_reason, closed_at. "
+        "Use this to spot patterns after a losing streak (\"which strategies lost?\", "
+        "\"which mcap bucket?\", \"same base_mint twice?\"). Prefer a small limit "
+        "(default 20) — the last N closes are usually enough."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "How many most-recent closes to return (1-100, default 20)."}
+        },
+    },
+}
+
+
+def _handle_get_performance(args: dict, **kw) -> str:
+    try:
+        limit = _clip(args.get("limit"), 20, 100)
+        raw = get("/state/file/lessons")
+        perf = raw.get("performance") if isinstance(raw, dict) else None
+        if not isinstance(perf, list):
+            perf = []
+        # newest-last on disk; return the tail so the model reads chronologically.
+        return tool_result({"performance": perf[-limit:], "total": len(perf)})
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+MRD_GET_DECISIONS_SCHEMA = {
+    "name": "mrd_get_decisions",
+    "description": (
+        "Recent screening decisions from decision-log.json. Each entry: type "
+        "(deploy|close|skip|no_deploy|note), actor, pool, pool_name, summary, "
+        "reason, metrics, rejected. Use alongside mrd_get_performance when "
+        "diagnosing WHY a losing streak happened — e.g. \"the last 5 no_deploys "
+        "all rejected on low fee/TVL, meanwhile we DEPLOYED into 3 losers\"."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "How many most-recent decisions to return (1-100, default 20)."}
+        },
+    },
+}
+
+
+def _handle_get_decisions(args: dict, **kw) -> str:
+    try:
+        limit = _clip(args.get("limit"), 20, 100)
+        raw = get("/state/file/decision-log")
+        decisions = raw.get("decisions") if isinstance(raw, dict) else None
+        if not isinstance(decisions, list):
+            decisions = []
+        return tool_result({"decisions": decisions[-limit:], "total": len(decisions)})
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+MRD_ADD_LESSON_SCHEMA = {
+    "name": "mrd_add_lesson",
+    "description": (
+        "Save a PREFER/AVOID/WORKED/FAILED rule that Meridian's next screening "
+        "cycle will inject into its LESSONS block (pinned lessons always shown; "
+        "recent 5 unpinned also shown). Use this after a retrospective when the "
+        "user confirms a pattern is worth remembering. Keep the rule ONE short "
+        "sentence, imperative and specific — good: \"AVOID bid_ask with "
+        "bins_above=0 on meme coins — instant-OOR risk (Chiikawa, HBULL, MENSA).\" "
+        "Bad: \"be careful with bid_ask\". Pin the rule when the evidence is "
+        "strong (≥3 confirming closes) so it survives beyond the recent-5 window. "
+        "Tags help future filtering — suggested tags: strategy, mcap, volatility, "
+        "base_mint, holders, retrospective. NEVER add a lesson without user "
+        "confirmation in the same conversation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "rule": {
+                "type": "string",
+                "description": "One sentence, imperative, specific. Max 500 chars (server truncates).",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional labels for future filtering (e.g. [\"strategy\", \"bid_ask\", \"meme\"]).",
+            },
+            "pinned": {
+                "type": "boolean",
+                "description": "True = always injected into future screening prompts. Default false.",
+            },
+        },
+        "required": ["rule"],
+    },
+}
+
+
+def _handle_add_lesson(args: dict, **kw) -> str:
+    try:
+        rule = str(args.get("rule") or "").strip()
+        if len(rule) < 3:
+            return tool_error("rule is required (min 3 chars)")
+        tags_raw = args.get("tags") or []
+        tags = [str(t).strip() for t in tags_raw if isinstance(t, (str, int, float)) and str(t).strip()]
+        pinned = bool(args.get("pinned"))
+        payload = {"rule": rule, "tags": tags, "pinned": pinned}
+        return tool_result(post_tool("add_lesson", payload, confirm=True))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)

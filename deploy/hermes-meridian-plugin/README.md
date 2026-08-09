@@ -6,9 +6,12 @@ dashboard bridge. This directory is the **source of truth**; the deployed copy l
 the vivobook at `~/.hermes/profiles/sage/plugins/meridian/`.
 
 ## Files
-- `plugin.yaml` — manifest (`kind: backend`, 9 `provides_tools`).
-- `__init__.py` — `register(ctx)`; registers the 9 tools into the `meridian` toolset. **Relative imports** (`from .tools`) — required for user-dir plugins.
-- `tools.py` — tool schemas + handlers. Reads: `mrd_get_positions/summary/wallet/candidates/config`. Writes (`confirm:true`): `mrd_deploy_position` (carries `cycle_id`), `mrd_close_position` (**requires `reason` string** — Zod-min:1 on Meridian side), `mrd_claim_fees`, `mrd_update_config` (flat-key patch, live-reloaded, human-gated at the bridge).
+- `plugin.yaml` — manifest (`kind: backend`, 12 `provides_tools`).
+- `__init__.py` — `register(ctx)`; registers the 12 tools into the `meridian` toolset. **Relative imports** (`from .tools`) — required for user-dir plugins.
+- `tools.py` — tool schemas + handlers.
+  - **Reads:** `mrd_get_positions/summary/wallet/candidates/config/performance/decisions`.
+  - **Writes (`confirm:true`):** `mrd_deploy_position` (carries `cycle_id`), `mrd_close_position` (**requires `reason` string** — Zod-min:1 on Meridian side), `mrd_claim_fees`, `mrd_update_config` (flat-key patch, live-reloaded, human-gated at the bridge), `mrd_add_lesson` (PREFER/AVOID rule, auto-injected into future screening cycles).
+  - **Retrospective trio:** `mrd_get_performance` + `mrd_get_decisions` + `mrd_add_lesson` power the Telegram flow *"we had N losses in a row — analyze and save a lesson"*. Saved lessons appear in Meridian's LESSONS block on the next screening cycle (pinned always; recent 5 unpinned).
 - `client.py` — stdlib (urllib) HTTP client to the bridge. Sends Bearer + explicit User-Agent. Post-migration (2026-08-02) the bridge is intra-host; `MERIDIAN_BRIDGE_CF_CLIENT_ID/SECRET` are unused (kept in client for compat but leave unset). Reads `MERIDIAN_BRIDGE_URL/TOKEN`.
 - `test_client.py` — local client tests (`python3 test_client.py`, no Hermes runtime needed).
 - `skill/SKILL.md` — Sage's `meridian-ops` operational knowledge skill (mode detection, tool inventory, playbooks, boundaries). Deployed to `~/.hermes/profiles/sage/skills/meridian-ops/SKILL.md`. **Sage's SOUL.md is intentionally NOT modified — this skill loads on demand.**

@@ -52,6 +52,23 @@ class Bridge(BaseHTTPRequestHandler):
             return self._send(200, {"positions": [{"position": "p1"}], "total_positions": 1})
         if self.path.startswith("/state/summary"):
             return self._send(200, {"summary": {"open": 1}, "balance": {"sol": 5}})
+        if self.path.startswith("/state/file/lessons"):
+            # 3 fake closed trades, newest last
+            return self._send(200, {
+                "lessons": [{"id": "l1", "rule": "existing", "pinned": True, "tags": []}],
+                "performance": [
+                    {"position": "posA", "pool": "poolA", "pnl_pct": -12, "close_reason": "stop_loss", "recorded_at": "2026-08-09T05:00:00Z"},
+                    {"position": "posB", "pool": "poolB", "pnl_pct": -18, "close_reason": "stop_loss", "recorded_at": "2026-08-09T06:00:00Z"},
+                    {"position": "posC", "pool": "poolC", "pnl_pct": 22, "close_reason": "take_profit", "recorded_at": "2026-08-09T07:00:00Z"},
+                ],
+            })
+        if self.path.startswith("/state/file/decision-log"):
+            return self._send(200, {
+                "decisions": [
+                    {"id": "d1", "type": "no_deploy", "actor": "SCREENER", "summary": "no candidates"},
+                    {"id": "d2", "type": "deploy", "actor": "SCREENER", "summary": "opened BONK"},
+                ],
+            })
         return self._send(404, {"error": "nope"})
 
     def do_POST(self):
@@ -116,6 +133,43 @@ def run():
     assert calls[-1][2]["name"] == "claim_fees"
     passed += 1
 
+    # ── retrospective trio ───────────────────────────────────────────────
+    r = jr(T._handle_get_performance({"limit": 2}))
+    assert r["total"] == 3 and len(r["performance"]) == 2
+    # Tail of the list (newest closes) so a retrospective sees recent losses.
+    assert r["performance"][-1]["position"] == "posC"
+    assert calls[-1][0] == "GET" and calls[-1][1] == "/state/file/lessons"
+    passed += 1
+
+    r = jr(T._handle_get_performance({"limit": "abc"}))  # bad input → default 20
+    assert r["total"] == 3 and len(r["performance"]) == 3
+    passed += 1
+
+    r = jr(T._handle_get_decisions({"limit": 1}))
+    assert r["total"] == 2 and len(r["decisions"]) == 1
+    assert r["decisions"][0]["id"] == "d2"
+    assert calls[-1][1] == "/state/file/decision-log"
+    passed += 1
+
+    # add_lesson success
+    r = jr(T._handle_add_lesson({
+        "rule": "AVOID bid_ask with bins_above=0 on meme coins — instant-OOR risk.",
+        "tags": ["strategy", "bid_ask", "meme"],
+        "pinned": True,
+    }))
+    assert calls[-1][0] == "POST" and calls[-1][1] == "/tool"
+    body = calls[-1][2]
+    assert body["name"] == "add_lesson" and body["confirm"] is True
+    assert body["args"]["pinned"] is True
+    assert body["args"]["tags"] == ["strategy", "bid_ask", "meme"]
+    passed += 1
+
+    # add_lesson refuses empty rule (never hits the bridge)
+    before = len(calls)
+    assert "error" in jr(T._handle_add_lesson({"rule": " "}))
+    assert len(calls) == before
+    passed += 1
+
     os.environ.pop("MERIDIAN_BRIDGE_URL")
     assert T._check() is False
     assert "error" in jr(T._handle_get_positions({}))
@@ -123,7 +177,7 @@ def run():
 
     httpd.shutdown()
     shutil.rmtree(root, ignore_errors=True)
-    print(f"meridian handlers: {passed}/10 passed")
+    print(f"meridian handlers: {passed}/15 passed")
     return 0
 
 
