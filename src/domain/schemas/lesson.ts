@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TechnicalsSummarySchema } from "./kline.js";
 
 export const LessonSchema = z
   .object({
@@ -52,6 +53,10 @@ export const PerformanceRecordSchema = z
     /** Deterministic close_at time (ISO) so the UI can render without inferring from minutes_held. */
     closed_at: z.string().nullable().optional(),
     signal_snapshot: z.record(z.string(), z.unknown()).nullable().optional(),
+    /** Multi-timeframe technicals captured at deploy — feeds retrospective pattern-mining. */
+    entry_technicals: z.array(TechnicalsSummarySchema).nullable().optional(),
+    /** Multi-timeframe technicals captured at close. */
+    exit_technicals: z.array(TechnicalsSummarySchema).nullable().optional(),
     recorded_at: z.string(),
   })
   .passthrough();

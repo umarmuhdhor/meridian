@@ -1,6 +1,12 @@
 import type { PostHook } from "../types.js";
 import type { CloseResult } from "../../../domain/schemas/chain.js";
 import type { PerformanceRecord } from "../../../domain/schemas/lesson.js";
+import type { KlineTimeframe, TechnicalsSummary } from "../../../domain/schemas/kline.js";
+import { computeTechnicals } from "../../../domain/format/technicals.js";
+
+const EXIT_TECHNICALS_TIMEFRAMES: readonly KlineTimeframe[] = ["5m", "1h"] as const;
+const EXIT_TECHNICALS_LIMIT = 100;
+const EXIT_TECHNICALS_TIMEOUT_MS = 3_500;
 
 /**
  * Append a PerformanceRecord to lessons.json after a successful close.
@@ -53,6 +59,28 @@ export const recordPerformanceHook: PostHook<
     ? Math.max(0, Math.round((now.getTime() - deployedAtMs) / 60_000))
     : undefined;
 
+  // Exit technicals snapshot — same pattern as entry, fail-open. Feeds
+  // entry-vs-exit chart-shape retrospectives ("did we exit at a bounce?").
+  let exitTechnicals: TechnicalsSummary[] | null = null;
+  if (result.pool_address) {
+    try {
+      const timeout = <T,>(p: Promise<T>): Promise<T | null> =>
+        Promise.race([p, new Promise<null>((res) => setTimeout(() => res(null), EXIT_TECHNICALS_TIMEOUT_MS))]);
+      const rows = await Promise.all(
+        EXIT_TECHNICALS_TIMEFRAMES.map(async (tf) => {
+          const candles = await timeout(
+            ctx.market.kline.getKline(result.pool_address!, tf, { limit: EXIT_TECHNICALS_LIMIT }),
+          ).catch(() => null);
+          return computeTechnicals(candles ?? [], tf);
+        }),
+      );
+      const useful = rows.filter((r) => r.last_close != null);
+      exitTechnicals = useful.length ? useful : null;
+    } catch {
+      // non-fatal
+    }
+  }
+
   // Exit-mcap lookup — best-effort. TokenInfo tends to be cached (~1 min TTL)
   // so this rarely hits the network, and a failure here should not gate the
   // write.
@@ -94,6 +122,8 @@ export const recordPerformanceHook: PostHook<
     ...(tracked?.entry_mcap != null ? { entry_mcap: tracked.entry_mcap } : {}),
     ...(exitMcap != null ? { exit_mcap: exitMcap } : {}),
     ...(baseMint ? { base_mint: baseMint } : {}),
+    ...(tracked?.entry_technicals ? { entry_technicals: tracked.entry_technicals } : {}),
+    ...(exitTechnicals ? { exit_technicals: exitTechnicals } : {}),
     ...(tracked?.holders_at_entry != null ? { holders_at_entry: tracked.holders_at_entry } : {}),
     ...(tracked?.smart_wallets_present != null
       ? { smart_wallets_present: tracked.smart_wallets_present }

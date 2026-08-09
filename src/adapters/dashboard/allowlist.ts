@@ -5,7 +5,7 @@
 
 export const READ_TOOLS = new Set<string>([
   "get_my_positions", "get_position_pnl", "get_wallet_balance", "get_wallet_positions",
-  "get_top_candidates", "get_pool_detail", "get_active_bin", "get_pool_memory",
+  "get_top_candidates", "get_pool_detail", "get_pool_kline", "get_active_bin", "get_pool_memory",
   "get_recent_decisions", "get_performance_history", "list_lessons", "list_strategies",
   "list_smart_wallets", "list_blacklist", "list_blocked_deployers", "check_smart_wallets_on_pool",
 ]);
@@ -17,7 +17,7 @@ export const CHAT_READ_TOOLS: readonly string[] = [
   ...READ_TOOLS,
   "get_recent_decisions", "get_performance_history", "list_lessons", "list_strategies",
   "list_smart_wallets", "list_blacklist", "list_blocked_deployers",
-  "get_pool_memory", "get_pool_detail", "search_pools", "discover_pools",
+  "get_pool_memory", "get_pool_detail", "get_pool_kline", "search_pools", "discover_pools",
   "get_token_info", "get_token_holders", "get_token_narrative",
   "study_top_lpers", "get_top_lpers",
 ];

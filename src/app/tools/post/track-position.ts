@@ -1,6 +1,12 @@
 import type { PostHook } from "../types.js";
 import type { DeployResult } from "../../../domain/schemas/chain.js";
 import type { TrackedPosition } from "../../../domain/schemas/position.js";
+import type { KlineTimeframe, TechnicalsSummary } from "../../../domain/schemas/kline.js";
+import { computeTechnicals } from "../../../domain/format/technicals.js";
+
+const ENTRY_TECHNICALS_TIMEFRAMES: readonly KlineTimeframe[] = ["5m", "1h"] as const;
+const ENTRY_TECHNICALS_LIMIT = 100;
+const ENTRY_TECHNICALS_TIMEOUT_MS = 3_500;
 
 /**
  * Post-hook: persist a freshly deployed position to the position-repo (state.json)
@@ -41,6 +47,32 @@ export function trackDeployedPosition(): PostHook<
     } catch {
       // non-fatal
     }
+
+    // Capture entry technicals so post-mortems can compare entry-vs-exit chart
+    // shape ("was every loser entered at at_local_top=YES?"). Fail-open, per
+    // timeframe — timeout drops that row but doesn't gate the deploy tracking.
+    let entryTechnicals: TechnicalsSummary[] | null = null;
+    try {
+      const timeout = <T,>(p: Promise<T>): Promise<T | null> =>
+        Promise.race([p, new Promise<null>((res) => setTimeout(() => res(null), ENTRY_TECHNICALS_TIMEOUT_MS))]);
+      const rows = await Promise.all(
+        ENTRY_TECHNICALS_TIMEFRAMES.map(async (tf) => {
+          const candles = await timeout(
+            ctx.market.kline.getKline(result.pool_address ?? args.pool_address, tf, {
+              limit: ENTRY_TECHNICALS_LIMIT,
+            }),
+          ).catch(() => null);
+          return computeTechnicals(candles ?? [], tf);
+        }),
+      );
+      // Keep only rows with actual data — an empty candles array yields all-nulls,
+      // which is noise. Threshold: at least last_close resolved.
+      const useful = rows.filter((r) => r.last_close != null);
+      entryTechnicals = useful.length ? useful : null;
+    } catch {
+      // non-fatal
+    }
+
     const pos: TrackedPosition = {
       position: result.position_address,
       pool: result.pool_address ?? args.pool_address,
@@ -59,6 +91,7 @@ export function trackDeployedPosition(): PostHook<
       entry_mcap: args.mcap ?? null,
       holders_at_entry: args.holders ?? null,
       smart_wallets_present: args.smart_wallets_present ?? null,
+      entry_technicals: entryTechnicals,
       deployed_at: now,
       out_of_range_since: null,
       last_claim_at: null,

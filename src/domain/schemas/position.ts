@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TechnicalsSummarySchema } from "./kline.js";
 
 export const TrackedPositionSchema = z.object({
   position: z.string(),
@@ -27,6 +28,8 @@ export const TrackedPositionSchema = z.object({
   holders_at_entry: z.number().int().nonnegative().nullable().optional(),
   /** Whether at least one smart wallet was in the pool at deploy time. */
   smart_wallets_present: z.boolean().nullable().optional(),
+  /** Multi-timeframe technicals captured at deploy — copied into PerformanceRecord on close. */
+  entry_technicals: z.array(TechnicalsSummarySchema).nullable().optional(),
   deployed_at: z.string(),
   out_of_range_since: z.string().nullable(),
   last_claim_at: z.string().nullable(),

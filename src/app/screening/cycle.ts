@@ -20,6 +20,8 @@ import {
   formatPortfolioAggregate,
 } from "../../domain/format/candidate-history.js";
 import type { PerformanceRecord } from "../../domain/schemas/lesson.js";
+import { computeTechnicals, formatTechnicalsBlock } from "../../domain/format/technicals.js";
+import type { KlineTimeframe, TechnicalsSummary } from "../../domain/schemas/kline.js";
 
 export interface ScreeningCycleDeps {
   ctx: AppContext;
@@ -85,6 +87,49 @@ interface Diligence {
   error?: string;
 }
 
+/** Technicals per shortlisted candidate — one entry per configured timeframe, fail-open. */
+type CandidateTechnicals = TechnicalsSummary[];
+
+const SCREENING_TIMEFRAMES: readonly KlineTimeframe[] = ["5m", "1h"] as const;
+const SCREENING_KLINE_LIMIT = 100;
+const SCREENING_KLINE_TIMEOUT_MS = 3_500;
+
+/**
+ * Pre-fetch OHLCV for each shortlisted candidate on the configured timeframes,
+ * compute the technicals summary, and return one array per candidate. Parallel
+ * per (candidate × timeframe), 3.5s per-call timeout, fails open — a rate-limit
+ * or missing history drops that timeframe's line but never blocks the cycle.
+ *
+ * The result flows into `formatCandidatesBlock`, which appends a `technicals:`
+ * block per candidate so the decider (Sage or local loop) sees inline signals
+ * for spike detection, support proximity, trend, volatility — WITHOUT having
+ * to call a tool inside the 90s delegation budget.
+ */
+async function enrichTechnicals(
+  picked: TopCandidatesResult["picked"],
+  ctx: AppContext,
+): Promise<CandidateTechnicals[]> {
+  const timeout = <T,>(p: Promise<T>): Promise<T | null> =>
+    Promise.race([
+      p,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), SCREENING_KLINE_TIMEOUT_MS)),
+    ]);
+
+  return Promise.all(
+    picked.map(async (p): Promise<CandidateTechnicals> => {
+      const rows = await Promise.all(
+        SCREENING_TIMEFRAMES.map(async (tf) => {
+          const candles = await timeout(
+            ctx.market.kline.getKline(p.pool.pool_address, tf, { limit: SCREENING_KLINE_LIMIT }),
+          ).catch(() => null);
+          return computeTechnicals(candles ?? [], tf);
+        }),
+      );
+      return rows;
+    }),
+  );
+}
+
 /**
  * Pre-enrich each candidate with fresh diligence data (rug + holder concentration)
  * so Sage's autonomous cycle has everything it needs inline — no extra tool calls,
@@ -148,6 +193,7 @@ function formatCandidatesBlock(
   diligence?: readonly Diligence[],
   performance?: readonly PerformanceRecord[],
   now?: Date,
+  technicals?: readonly CandidateTechnicals[],
 ): string {
   if (!picked.length) return "  (no candidates passed)";
   const perfHistory = performance ?? [];
@@ -182,9 +228,12 @@ function formatCandidatesBlock(
         clock,
       );
       const historyLine = formatCandidateHistoryLine(history);
+      const techRows = technicals?.[i];
+      const techBlock = techRows ? formatTechnicalsBlock(techRows) : null;
       const dilLine = parts.length ? `\n       diligence: ${parts.join("  ")}` : "";
       const histLine = historyLine ? `\n       history:   ${historyLine}` : "";
-      return `${base}${dilLine}${histLine}`;
+      const techLine = techBlock ? `\n       technicals: ${techBlock}` : "";
+      return `${base}${dilLine}${histLine}${techLine}`;
     })
     .join("\n");
 }
@@ -366,6 +415,11 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
   const pickedFiltered = dilKept.map((i) => picked[i]!) as typeof picked;
   const diligence = dilKept.map((i) => diligenceRaw[i]!);
 
+  // Pre-fetch OHLCV + compute technicals for the diligence-passing shortlist.
+  // Same fail-open contract as enrichCandidates — the decider gets whatever
+  // resolved in time; missing timeframes just render fewer lines.
+  const technicals = await enrichTechnicals(pickedFiltered, ctx);
+
   if (pickedFiltered.length === 0) {
     const reason = `All ${picked.length} shortlisted candidate(s) failed diligence caps (bot% > ${maxBot} or top10% > ${maxTop10}).`;
     await appendNoDeploy(ctx, {
@@ -392,7 +446,7 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     "SCREENING CYCLE — pick one of the following candidates and call deploy_position, or explain why none qualify.",
     "",
     "CANDIDATES (fresh diligence + prior history included — do NOT fetch more):",
-    formatCandidatesBlock(pickedFiltered, diligence, recentPerformance, clockNow),
+    formatCandidatesBlock(pickedFiltered, diligence, recentPerformance, clockNow, technicals),
     "",
     portfolioBlock,
     "",
@@ -533,7 +587,7 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       "SCREENING CYCLE — choose one candidate and call mrd_deploy_position, or NO DEPLOY.",
       "",
       "CANDIDATES (fresh diligence + prior history included — do NOT fetch more):",
-      formatCandidatesBlock(pickedFiltered, diligence, recentPerformance, clockNow),
+      formatCandidatesBlock(pickedFiltered, diligence, recentPerformance, clockNow, technicals),
       "",
       portfolioBlock,
       "",

@@ -16,6 +16,8 @@ import { createMeteoraChainClient } from "../adapters/chain/meteora/client.js";
 import { createSolanaConnection, loadWalletKeypair } from "../adapters/chain/meteora/connection.js";
 import { createStaticPriceOracle } from "../adapters/market/static-price-oracle.js";
 import { createJupiterPriceOracle } from "../adapters/market/jupiter-price-oracle.js";
+import { createGeckoTerminalKlineClient } from "../adapters/market/geckoterminal-kline.js";
+import { createFakeKlineClient } from "../adapters/market/fake-kline.js";
 import { createJupiterSwapClient } from "../adapters/swap/jupiter-swap.js";
 import { createMeteoraDatapiPnlFetcher } from "../adapters/chain/meteora/datapi-pnl.js";
 import type { ChainClient } from "../ports/chain-client.js";
@@ -66,6 +68,7 @@ import { getTopCandidatesTool } from "../app/tools/impls/get-top-candidates.js";
 import { getPositionPnlTool } from "../app/tools/impls/get-position-pnl.js";
 import { getWalletPositionsTool } from "../app/tools/impls/get-wallet-positions.js";
 import { getPoolDetailTool } from "../app/tools/impls/get-pool-detail.js";
+import { getPoolKlineTool } from "../app/tools/impls/get-pool-kline.js";
 import { getPerformanceHistoryTool } from "../app/tools/impls/get-performance-history.js";
 import { listLessonsTool } from "../app/tools/impls/list-lessons.js";
 import { listStrategiesTool } from "../app/tools/impls/list-strategies.js";
@@ -132,6 +135,7 @@ const ALL_TOOLS = [
   getPositionPnlTool,
   getWalletPositionsTool,
   getPoolDetailTool,
+  getPoolKlineTool,
   getPerformanceHistoryTool,
   listLessonsTool,
   listStrategiesTool,
@@ -363,12 +367,17 @@ async function boot(): Promise<BootResult> {
           ...(cfg.value.api.publicApiKey ? { apiKey: cfg.value.api.publicApiKey } : {}),
         })
       : createFakeStudy();
+  const kline =
+    marketMode === "real"
+      ? createGeckoTerminalKlineClient({ clock, logger })
+      : createFakeKlineClient();
   const market = {
     pools,
     tokenInfo,
     rugCheck,
     smartWalletChecker,
     study,
+    kline,
   };
   logger.info("boot", `market: ${marketMode}`);
 
