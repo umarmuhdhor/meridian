@@ -11,6 +11,7 @@ provides_tools:
   - mrd_get_config
   - mrd_get_performance
   - mrd_get_decisions
+  - mrd_get_pool_kline
   - mrd_deploy_position
   - mrd_close_position
   - mrd_claim_fees

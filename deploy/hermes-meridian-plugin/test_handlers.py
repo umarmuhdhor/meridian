@@ -170,6 +170,34 @@ def run():
     assert len(calls) == before
     passed += 1
 
+    # ── kline / technicals ────────────────────────────────────────────────
+    T._handle_get_pool_kline({"pool_address": "PA", "timeframes": ["5m", "1h"], "limit": 50})
+    body = calls[-1][2]
+    assert body["name"] == "get_pool_kline"
+    assert body["args"] == {"pool_address": "PA", "timeframes": ["5m", "1h"], "limit": 50}
+    passed += 1
+
+    # unknown timeframe silently dropped; if nothing left → error, no bridge call
+    before = len(calls)
+    assert "error" in jr(T._handle_get_pool_kline({"pool_address": "PA", "timeframes": ["bogus"]}))
+    assert len(calls) == before
+    passed += 1
+
+    # limit clamp: >500 → 500, <1 → 1, non-numeric → 100
+    T._handle_get_pool_kline({"pool_address": "PA", "timeframes": ["5m"], "limit": 9999})
+    assert calls[-1][2]["args"]["limit"] == 500
+    T._handle_get_pool_kline({"pool_address": "PA", "timeframes": ["5m"], "limit": 0})
+    assert calls[-1][2]["args"]["limit"] == 1
+    T._handle_get_pool_kline({"pool_address": "PA", "timeframes": ["5m"], "limit": "abc"})
+    assert calls[-1][2]["args"]["limit"] == 100
+    passed += 1
+
+    # empty pool_address → refuse, no bridge call
+    before = len(calls)
+    assert "error" in jr(T._handle_get_pool_kline({"pool_address": " "}))
+    assert len(calls) == before
+    passed += 1
+
     os.environ.pop("MERIDIAN_BRIDGE_URL")
     assert T._check() is False
     assert "error" in jr(T._handle_get_positions({}))
@@ -177,7 +205,7 @@ def run():
 
     httpd.shutdown()
     shutil.rmtree(root, ignore_errors=True)
-    print(f"meridian handlers: {passed}/15 passed")
+    print(f"meridian handlers: {passed}/19 passed")
     return 0
 
 

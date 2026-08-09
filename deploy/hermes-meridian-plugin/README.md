@@ -6,12 +6,13 @@ dashboard bridge. This directory is the **source of truth**; the deployed copy l
 the vivobook at `~/.hermes/profiles/sage/plugins/meridian/`.
 
 ## Files
-- `plugin.yaml` — manifest (`kind: backend`, 12 `provides_tools`).
-- `__init__.py` — `register(ctx)`; registers the 12 tools into the `meridian` toolset. **Relative imports** (`from .tools`) — required for user-dir plugins.
+- `plugin.yaml` — manifest (`kind: backend`, 13 `provides_tools`).
+- `__init__.py` — `register(ctx)`; registers the 13 tools into the `meridian` toolset. **Relative imports** (`from .tools`) — required for user-dir plugins.
 - `tools.py` — tool schemas + handlers.
-  - **Reads:** `mrd_get_positions/summary/wallet/candidates/config/performance/decisions`.
+  - **Reads:** `mrd_get_positions/summary/wallet/candidates/config/performance/decisions/pool_kline`.
   - **Writes (`confirm:true`):** `mrd_deploy_position` (carries `cycle_id`), `mrd_close_position` (**requires `reason` string** — Zod-min:1 on Meridian side), `mrd_claim_fees`, `mrd_update_config` (flat-key patch, live-reloaded, human-gated at the bridge), `mrd_add_lesson` (PREFER/AVOID rule, auto-injected into future screening cycles).
   - **Retrospective trio:** `mrd_get_performance` + `mrd_get_decisions` + `mrd_add_lesson` power the Telegram flow *"we had N losses in a row — analyze and save a lesson"*. Saved lessons appear in Meridian's LESSONS block on the next screening cycle (pinned always; recent 5 unpinned).
+  - **Technical analysis:** `mrd_get_pool_kline` returns OHLCV + computed features (spike, at_local_top, atr, vol_spike, trend, support proximity + touches) for a Meteora pool. Multi-timeframe. Screening pre-fetches the same features inline so Sage doesn't need to call this inside a cycle — use it interactively (post-mortems, "was that entry at a spike top?", sanity-check a candidate).
 - `client.py` — stdlib (urllib) HTTP client to the bridge. Sends Bearer + explicit User-Agent. Post-migration (2026-08-02) the bridge is intra-host; `MERIDIAN_BRIDGE_CF_CLIENT_ID/SECRET` are unused (kept in client for compat but leave unset). Reads `MERIDIAN_BRIDGE_URL/TOKEN`.
 - `test_client.py` — local client tests (`python3 test_client.py`, no Hermes runtime needed).
 - `skill/SKILL.md` — Sage's `meridian-ops` operational knowledge skill (mode detection, tool inventory, playbooks, boundaries). Deployed to `~/.hermes/profiles/sage/skills/meridian-ops/SKILL.md`. **Sage's SOUL.md is intentionally NOT modified — this skill loads on demand.**

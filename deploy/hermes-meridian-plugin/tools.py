@@ -386,3 +386,63 @@ def _handle_add_lesson(args: dict, **kw) -> str:
         return tool_result(post_tool("add_lesson", payload, confirm=True))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
+
+
+# ── technical analysis (OHLCV + computed features via GeckoTerminal) ────────
+
+_KLINE_TFS = ("1m", "5m", "15m", "1h", "4h", "1d")
+
+
+MRD_GET_POOL_KLINE_SCHEMA = {
+    "name": "mrd_get_pool_kline",
+    "description": (
+        "Fetch OHLCV + computed technicals for a Meteora pool. Multi-timeframe. "
+        "Returns per-timeframe: raw candles + a technicals summary (spike_pct, "
+        "at_local_top, at_local_bottom, atr_pct, vol_spike, trend UP|DOWN|FLAT, "
+        "from_window_high_pct, nearest_support, support_distance_pct, "
+        "support_touches) PLUS a compact `formatted` string. Use this on demand "
+        "to check if an entry was at a spike top / near tested support, or to "
+        "sanity-check a candidate outside a screening cycle. Never call inside "
+        "an autonomous screening cycle — screening already has these numbers "
+        "inline in its candidate block."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pool_address": _STR,
+            "timeframes": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(_KLINE_TFS)},
+                "description": "One or more timeframes. Default [\"5m\", \"1h\"] — the same pair screening pre-fetches.",
+            },
+            "limit": {"type": "integer", "description": "Candles per timeframe (1-500, default 100)."},
+        },
+        "required": ["pool_address"],
+    },
+}
+
+
+def _handle_get_pool_kline(args: dict, **kw) -> str:
+    try:
+        pool = str(args.get("pool_address") or "").strip()
+        if not pool:
+            return tool_error("pool_address is required")
+        tfs_raw = args.get("timeframes") or ["5m", "1h"]
+        if not isinstance(tfs_raw, list) or not tfs_raw:
+            return tool_error("timeframes must be a non-empty array")
+        tfs = [t for t in tfs_raw if isinstance(t, str) and t in _KLINE_TFS]
+        if not tfs:
+            return tool_error(f"timeframes must include at least one of {_KLINE_TFS}")
+        limit_raw = args.get("limit", 100)
+        try:
+            limit = int(limit_raw)
+        except Exception:
+            limit = 100
+        if limit < 1:
+            limit = 1
+        if limit > 500:
+            limit = 500
+        payload = {"pool_address": pool, "timeframes": tfs, "limit": limit}
+        return tool_result(post_tool("get_pool_kline", payload))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)

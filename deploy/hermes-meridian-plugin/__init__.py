@@ -1,6 +1,6 @@
 """meridian plugin — connects Sage to the Meridian DLMM trading agent.
 
-Registers 12 tools into the ``meridian`` toolset. Reads are always safe; writes
+Registers 13 tools into the ``meridian`` toolset. Reads are always safe; writes
 (deploy/close/claim/update_config/add_lesson) POST the confirm-gated bridge
 /tool path, which runs Meridian's own safety gates + post hooks. Tools stay
 registered even when the bridge is not configured (so they show in `hermes
@@ -26,6 +26,7 @@ from .tools import (
     MRD_GET_CONFIG_SCHEMA,
     MRD_GET_DECISIONS_SCHEMA,
     MRD_GET_PERFORMANCE_SCHEMA,
+    MRD_GET_POOL_KLINE_SCHEMA,
     MRD_GET_POSITIONS_SCHEMA,
     MRD_GET_SUMMARY_SCHEMA,
     MRD_GET_WALLET_SCHEMA,
@@ -39,6 +40,7 @@ from .tools import (
     _handle_get_config,
     _handle_get_decisions,
     _handle_get_performance,
+    _handle_get_pool_kline,
     _handle_get_positions,
     _handle_get_summary,
     _handle_get_wallet,
@@ -53,6 +55,7 @@ _TOOLS = (
     ("mrd_get_config", MRD_GET_CONFIG_SCHEMA, _handle_get_config, "⚙️"),
     ("mrd_get_performance", MRD_GET_PERFORMANCE_SCHEMA, _handle_get_performance, "📈"),
     ("mrd_get_decisions", MRD_GET_DECISIONS_SCHEMA, _handle_get_decisions, "🗒️"),
+    ("mrd_get_pool_kline", MRD_GET_POOL_KLINE_SCHEMA, _handle_get_pool_kline, "📉"),
     ("mrd_deploy_position", MRD_DEPLOY_SCHEMA, _handle_deploy, "🚀"),
     ("mrd_close_position", MRD_CLOSE_SCHEMA, _handle_close, "🔒"),
     ("mrd_claim_fees", MRD_CLAIM_SCHEMA, _handle_claim, "💰"),
