@@ -2,8 +2,11 @@ import { z } from "zod";
 import { defineTool } from "../define-tool.js";
 
 const MAX_LEN = 500;
+// Lessons render into LLM prompts, not HTML — `<` / `>` are load-bearing (they
+// carry comparators in TA rules like "1h ATR > 25%" / "from_high < -30%").
+// Strip only control chars + collapse whitespace + cap length.
 const sanitize = (t: string): string =>
-  t.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").replace(/[<>]/g, "").trim().slice(0, MAX_LEN);
+  t.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_LEN);
 
 export const addLessonTool = defineTool({
   name: "add_lesson",

@@ -76,23 +76,32 @@ You need nothing else. All other reads (wallet, positions, other candidates, gmg
 Decision logic:
 
 1. Rank was done by Meridian's hard filter + scorer — trust it. You're picking the best of the shortlist, not re-filtering.
-2. **Read the `technicals:` line for every candidate BEFORE choosing.** Meridian pre-fetches OHLCV + computed features (`spike_pct`, `at_local_top`, `from_high`, `vol_x`, `nearest_support`, `support_distance_pct`, `support_touches`, `trend`, `atr`) on 5m + 1h and injects them inline. This IS your TA. You do not need to (and MUST NOT) call `mrd_get_pool_kline` inside a cycle — it wastes budget and the data is already right there.
-3. Apply the **spike-top veto** below. Better to `NO DEPLOY` a spike than eat another stop-loss.
+2. **Read the `technicals:` line for every candidate BEFORE choosing.** Meridian pre-fetches OHLCV + computed features (`spike_pct`, `at_local_top`, `from_high`, `vol_x`, `nearest_support`, `support_distance_pct`, `support_touches`, `trend`, `atr_pct`) on 5m + 1h and injects them inline. This IS your TA — it tells you entry quality, not just price direction. You do not need to (and MUST NOT) call `mrd_get_pool_kline` inside a cycle — it wastes budget and the data is already right there. The three things that kill positions are: entering at a spike top, entering mid-downtrend, and entering during extreme volatility. The TA line catches all three.
+3. Apply the **entry-quality veto** below. Better to `NO DEPLOY` a bad entry than eat another stop-loss.
 4. Pick a **strategy per candidate** from its technicals + conditions — do NOT copy the config `strategy` default (it's a fallback, not an instruction).
 5. Consult your memory (session key `meridian-trading`) + the `── LESSONS ──` block in the system prompt: patterns of past wins/losses on similar pools, tokens, launchpads, times of day. If you closed a similar pool for stop-loss recently, prefer a different candidate this cycle even if it ranks lower.
 6. Call `mrd_deploy_position` EXACTLY ONCE with the fixed params (`amount_sol`, `bins_below`, `bins_above`, `cycle_id`) + your chosen `pool_address` + your chosen `strategy` (spot | curve | bid_ask).
 
-### Spike-top veto — hard rule
+### Entry-quality veto — hard rule
 
 **Skip a candidate when ANY of these fire (regardless of score):**
 
+**Spike-top conditions (Mode 1 — 5/6 historical SLs):**
 - `at_local_top=YES` on 5m OR 1h — price sitting at recent extreme, no room above.
 - `spike_pct > +25%` on 5m AND `vol_x > 3` — fresh vertical pump, unsustainable, reverts.
 - `spike_pct > +50%` on 1h — already had a large move, mean-reversion is the base rate.
 - `support_distance_pct < -20%` on 1h — nearest support is more than 20% below current. With single-side SOL + `bins_above=0`, entering here means the entire range is above support; a pullback exits range and starts accumulating token at inflated prices → stop loss.
 - `trend=DOWN` on 1h AND `support_touches < 2` — falling, and no tested support to catch a bounce.
 
-If NO candidate survives the veto → `NO DEPLOY: all N shortlisted are at spike top / far above support (list the flags)`. This is defensible; deploying into a spike top is not.
+**Sustained downtrend condition (Mode 2 — 1/6 historical SLs, NEEGY confirmation):**
+- `trend=DOWN` on 1h AND `from_window_high_pct < -30%` — token is in a sustained downtrend with no stabilization. Even with LOW fee_tvl_ratio (NEEGY was 17.32%), price keeps falling through all bins. Wait for trend to flatten or price to find tested support before deploying. **Do NOT confuse low fee_tvl_ratio with safety** — a dead token in freefall has low fees because no one is trading, not because it's stable.
+
+**Extreme volatility condition (LOUIE confirmation — 1h ATR 39.8%, 461% pump→crash):**
+- `atr_pct > 25%` on 1h OR `atr_pct > 10%` on 5m — price swings are so wide that all 69 bins get traversed in minutes. Entry at any point in the range is a gamble, not a position.
+
+If NO candidate survives the veto → `NO DEPLOY: all N shortlisted are at spike top / in downtrend / extreme vol (list the flags)`. This is defensible; deploying into a bad entry is not.
+
+**Mcap is NOT a veto signal.** An earlier analysis incorrectly concluded that low mcap (<$2.5M) caused stop losses. The real cause was entry timing — spike tops and downtrends. TOAD ($11-15M mcap) won because it was chopping sideways at entry, not because it was bigger. Low mcap correlates with losses only because small tokens spike harder; the veto should be on the spike, not the mcap.
 
 ### Strategy selection — per candidate, not per config
 
@@ -163,12 +172,15 @@ The retrospective protocol — analyze first, propose the lesson, only save on c
 1. `mrd_get_performance({limit: 20})` — pull recent closes.
 2. `mrd_get_decisions({limit: 20})` — pull the screening decisions around them, to see what was picked vs skipped.
 3. Look for a shared pattern across the losers: same `strategy`, same volatility bucket, same `entry_mcap` bucket, same `base_mint`, same `close_reason`, same `bin_step`, launched from same deployer, similar hour-of-day. Aim for a pattern with **≥3 confirming closes** — one-offs are noise, not lessons.
-4. Report the pattern to the user in plain language with the actual numbers: *"3 of 3 losses were `bid_ask` with `entry_mcap < 50k`; average PnL −19%. Winners in same window were all `spot`."*
-5. **Propose the lesson** — one imperative sentence, specific, with the trigger and the action. Ask: *"Save this? `AVOID bid_ask when entry_mcap < 50k — 3/3 recent losses avg −19%.` Pinned?"*
-6. Only on explicit user confirmation: `mrd_add_lesson({rule, tags, pinned: true if strong evidence})`. Never save without a "yes".
-7. Confirm back with the lesson id + a note that Meridian's next screening cycle will see it.
+4. **If close_reason is `stop loss`, pull `mrd_get_pool_kline` on the losing pool(s)** to verify entry-quality. The kline tells you whether the SL was caused by a spike-top entry (`at_local_top=YES`, high `spike_pct`, high `fee_tvl_ratio`), a sustained downtrend (`trend=DOWN`, `from_window_high_pct < -30%`, low fee_tvl_ratio), or extreme volatility (`atr_pct > 25%` on 1h). This distinguishes the two failure modes that look identical in the performance table but require different vetoes. Compare `entry_technicals` vs `exit_technicals` from `mrd_get_performance` when available — often the pattern is "entered at `at_local_top=YES`, closed after the pump reverted".
+5. Report the pattern to the user in plain language with the actual numbers: *"3 of 3 losses were `bid_ask` with `entry_mcap < 50k`; average PnL −19%. Winners in same window were all `spot`. Kline confirms: all 3 entered at spike tops (`at_local_top=YES`)."*
+6. **Propose the lesson** — one imperative sentence, specific, with the trigger and the action. Ask: *"Save this? `AVOID bid_ask when entry_mcap < 50k — 3/3 recent losses avg −19%.` Pinned?"*
+7. Only on explicit user confirmation: `mrd_add_lesson({rule, tags, pinned: true if strong evidence})`. Never save without a "yes".
+8. Confirm back with the lesson id + a note that Meridian's next screening cycle will see it.
 
 Never save more than one lesson per retrospective. Never save a lesson the user didn't approve. Never save a lesson inside a screening cycle.
+
+**Reference:** `references/stop-loss-postmortem-aug-2026.md` — full kline-confirmed analysis of 6 SLs (Aug 5-9), two failure modes (spike-top entry vs sustained downtrend), the mcap red herring, and what worked for contrast.
 
 ---
 
