@@ -160,3 +160,34 @@ profile dir — Hermes sets `HERMES_HOME` to the profile when run with `-p sage`
 6. **Delegation prompt must be Sage-tailored** — sending Meridian's full SCREENER prompt (12 tool names Sage lacks) made Sage flail and time out; the focused "pick a candidate, call mrd_deploy_position, no other tools" prompt is what makes Sage actually decide.
 7. **Never double-restart `docker compose … gateway` mid-drain** — profiles get stranded in `draining` (reconcile only starts prior_state=running). One restart, full 120s settle; or reload one profile via s6.
 8. **Sage can't run diligence tools inside a cycle** (90s timeout, prompt forbids it) — early cycles ended with "requires GMGN-confirmed improvement, blocked by cycle constraints", leaving the wallet idle. Fix (2026-08-02): Meridian pre-enriches candidates itself (`enrichCandidates` in `src/app/screening/cycle.ts`) — parallel rugCheck + holder lookups per pick, 3s per-call timeout, fail open. The inline `diligence:` line gives Sage GMGN-equivalent verification for free; the sage prompt now explicitly says "the diligence data is already in the candidate block — do NOT fetch more". Fresh diligence is also the signal that justifies overriding a stale in-memory veto (token status changes minute-to-minute).
+
+## Post-cutover milestones
+
+- **2026-08-09 (Phase 1)** — history injection. Every screening cycle preflight now
+  loads `recentPerformance(50)` + `listLessons({limit:20})` and injects per-candidate
+  `history:` (pool + base_mint match count + avg pnl% + last-loss-ago) + a portfolio
+  aggregate `PRIOR EXPERIENCE:` block (wins/losses bucketed by strategy / volatility /
+  entry_mcap). Sage's `sageSystemPrompt` finally gets the `── LESSONS ──` block that
+  the local-loop `buildSystemPrompt` already had — pinned + recent 5. PerformanceRecord
+  gained `base_mint` so same-token matches survive across pools.
+- **2026-08-09 (Phase 2)** — retrospective trio. Plugin gained `mrd_get_performance`,
+  `mrd_get_decisions`, `mrd_add_lesson` (tools count 9 → 12). Sage's Telegram flow:
+  *"we had N losses, analyze and save a lesson"* now pulls closed trades + screening
+  decisions, pattern-mines, proposes a one-sentence rule with confirming closes ≥3,
+  saves on user confirmation. Lessons flow back through the LESSONS block from Phase 1.
+- **2026-08-10 (Phase 3)** — technical analysis. New `KlineClient` port +
+  `geckoterminal-kline` adapter (keyless OHLCV, 60s TTL, fail-open). `enrichTechnicals`
+  runs alongside `enrichCandidates` per screening cycle — 5m + 1h computed features
+  (spike_pct, at_local_top, ATR%, vol_spike, trend, support proximity + touches)
+  inline as a `technicals:` line per candidate. New `mrd_get_pool_kline` plugin tool
+  (12 → 13) for interactive analysis. `PerformanceRecord.entry_technicals` +
+  `exit_technicals` + `TrackedPosition.entry_technicals` frozen at deploy/close for
+  retrospective pattern-mining. Sage self-authored 5 pinned lessons (spike-top /
+  far-support / downtrend / extreme-volatility vetoes + strategy-per-candidate rule)
+  after its own 6-SL retro, and self-patched `skill/SKILL.md` +
+  `skill/references/stop-loss-postmortem-aug-2026.md`. **Always `scp` those files
+  BACK to the repo before pushing local — Sage's edits live on vivobook first.**
+9. **`add_lesson` sanitizer stripped `<` `>`** — HTML-injection defense that made no
+   sense for LLM-prompt content. Sage's TA-rule comparators ("1h ATR > 25%",
+   "from_high < -30%") were silently mangled to whitespace. Fixed 2026-08-10; the two
+   affected pinned lessons were hand-patched in the host `lessons.json`.

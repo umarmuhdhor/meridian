@@ -33,8 +33,26 @@ rollback (`git checkout legacy-js`).
   non-STAY actions to the LLM.
 - **Trailing take-profit** — dedicated 30s poller with a 15s two-phase drop
   confirm before firing a close.
-- **Learns from performance** — records structured lessons and shared learning
-  via HiveMind, evolves screening thresholds based on closed position history.
+- **Learns from performance** — records structured lessons + closed-trade
+  performance to `lessons.json` (each `PerformanceRecord` now carries
+  `base_mint`, `entry_technicals`, `exit_technicals`), evolves screening
+  thresholds based on closed position history, and shares learning via HiveMind.
+  Every screening cycle injects `── LESSONS ──` (pinned + recent 5), per-candidate
+  `history:` (pool + base_mint match against prior closes), a `PRIOR EXPERIENCE:`
+  portfolio aggregate (wins/losses bucketed by strategy / volatility / entry_mcap),
+  and inline `technicals:` (5m + 1h OHLCV features from GeckoTerminal) into the
+  Sage delegation prompt.
+- **Retrospective loop** — `mrd_get_performance` + `mrd_get_decisions` +
+  `mrd_add_lesson` (plugin tools) power the Telegram flow *"we had N losses in
+  a row — analyze and save a lesson"*. Saved rules auto-inject into the next
+  screening cycle's LESSONS block; Sage self-authored a spike-top veto + a
+  sustained-downtrend veto + an extreme-volatility veto against 6 recent SLs
+  on 2026-08-10.
+- **Technical analysis** — `mrd_get_pool_kline` returns multi-timeframe OHLCV
+  + 12 computed features (spike detection, at_local_top, ATR%, vol spike,
+  trend, swing-low support proximity + touch count). Screening pre-fetches
+  these inline per candidate; the tool is exposed for interactive analysis
+  and post-mortems in the Sage Telegram group.
 - **Telegram REPL** — in production, screening + conversational control is
   delegated to **Sage** (Hermes agent, memory-backed) via the intra-host bridge
   (see `deploy/SAGE-MERIDIAN-ROLLOUT.md`). Meridian keeps outbound cards
@@ -65,14 +83,15 @@ rollback (`git checkout legacy-js`).
    ├────────────────────────────────────────────────────────┤
    │ adapters/                ← concrete impls behind ports │
    │  chain/{dry-run, meteora/…}    llm/{openrouter, fake}  │
-   │  market/{jupiter-*, meteora-*, rugcheck}               │
+   │  market/{jupiter-*, meteora-*, rugcheck,               │
+   │          geckoterminal-kline}                          │
    │  notify/{telegram, telegram-inbound}                   │
    │  swap/jupiter-swap        hivemind/agent-meridian      │
    │  persistence/json/…       scheduler/{interval, manual} │
    └────────────────────────────────────────────────────────┘
 ```
 
-339 unit tests across 45 files.
+472 unit tests across 47 files.
 
 ---
 

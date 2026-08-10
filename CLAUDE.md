@@ -71,15 +71,16 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
  │              tools/execute.ts  executeTool(registry, call, ctx)          │
  │                 parse(jsonrepair) → args.zod → safety[] → execute → post[]│
  │                          │                                                │
- │              tools/impls/*.ts  (~59 tools, one file each)                 │
+ │              tools/impls/*.ts  (~60 tools, one file each)                 │
  └──────────────────────────┬──────────────────────────────────────────────┘
         uses ports (interfaces)  │  implemented by adapters
         ▼                        ▼
  domain/ (pure: rules, schemas, prompt, config-load)     adapters/
    rules: close-rules, pnl, exit-signals, scoring,          chain/meteora (real), chain/dry-run
-          cooldown, deploy-planning, screening              market/* (jupiter, meteora, rugcheck, + fakes)
-   schemas: 14 Zod shapes    ports/: 26 interfaces          persistence/json/* (9 repos, atomic)
-                                                            swap, llm(+decorators), notify, scheduler,
+          cooldown, deploy-planning, screening              market/* (jupiter, meteora, rugcheck,
+   format: decision-strings, enrich-close,                          geckoterminal-kline, + fakes)
+           candidate-history, technicals                    persistence/json/* (9 repos, atomic)
+   schemas: 15 Zod shapes    ports/: 27 interfaces          swap, llm(+decorators), notify, scheduler,
                                                             logger, hivemind, dashboard (bridge)
 ```
 
@@ -124,19 +125,31 @@ config + selects adapters + builds `AppContext`; `main()` (L410-606) wires cron/
   Config edits, applied in-place by `update_config`) drive the hard filter. (Was
   a `void cfg` no-op until 2026-07-13 — that config-drift footgun is fixed.)
 - `rules/scoring.ts:14`, `rules/cooldown.ts:7` (`isPoolOnCooldown`/`isBaseMintOnCooldown`).
-- `schemas/` (14) — `config.ts`/`config-flat.ts`, `position.ts` (TrackedPosition +
-  LivePositionSnapshot), `chain.ts`, `market.ts`, `pool-memory.ts`, `strategy.ts`,
-  `decision.ts` (MAX_DECISIONS=100), `lesson.ts`, `state.ts`, `study.ts`,
-  `smart-wallet.ts`, `blacklist.ts`, `dev-blocklist.ts`.
+- `schemas/` (15) — `config.ts`/`config-flat.ts`, `position.ts` (TrackedPosition +
+  LivePositionSnapshot + `entry_technicals`), `chain.ts`, `market.ts`, `pool-memory.ts`,
+  `strategy.ts`, `decision.ts` (MAX_DECISIONS=100), `lesson.ts` (PerformanceRecord adds
+  `base_mint` + `entry_technicals` + `exit_technicals`), `kline.ts` (KlineCandle,
+  KlineTimeframe, TechnicalsSummary), `state.ts`, `study.ts`, `smart-wallet.ts`,
+  `blacklist.ts`, `dev-blocklist.ts`.
+- `format/` — `decision-strings.ts`, `enrich-close.ts`, `candidate-history.ts`
+  (per-candidate pool + base_mint history + portfolio aggregate over last N closes),
+  `technicals.ts` (pure OHLCV[] → 12-feature TechnicalsSummary: spike_pct,
+  at_local_top/bottom, atr_pct via Wilder-14, vol_spike, trend via EMA(20)/EMA(50)
+  with 1% dead zone, from_window_high_pct, nearest_support via swing-low detection,
+  support_distance_pct, support_touches; + `formatTechnicalsLine` + `formatTechnicalsBlock`).
 - `prompt/builder.ts:95` `buildSystemPrompt(ctx)` — pure assembler; `roleInstructions`
-  = the 3 role prompts. `prompt/role-tools.ts` — `MANAGER_TOOLS`/`SCREENER_TOOLS`/`GENERAL_TOOLS`.
+  = the 3 role prompts. Includes `── LESSONS ──` (pinned + recent 5), `── PERFORMANCE ──`,
+  `── DECISIONS ──` when the caller passes them. `prompt/role-tools.ts` —
+  `MANAGER_TOOLS`/`SCREENER_TOOLS`/`GENERAL_TOOLS` (SCREENER + GENERAL both include
+  `get_pool_kline`).
 - `config-load.ts:147` `parseAppConfig(raw): Result<AppConfig,…>` — two-stage Zod:
   flat (`.passthrough()`) → `flatToNested` → nested. Never throws; returns a Result.
 
-**`src/ports/`** (26 interfaces) — the DI contracts. Chain/trading: `ChainClient`
+**`src/ports/`** (27 interfaces) — the DI contracts. Chain/trading: `ChainClient`
 (writes return `{success}` in-band, never throw), `SwapClient`, `SolanaConnection`,
 `PriceOracle`. Market: `PoolDiscoveryClient`, `TokenInfoClient`, `RugCheckClient`,
-`SmartWalletChecker`, `StudyClient`. Persistence (all `load(): Result` + mutators):
+`SmartWalletChecker`, `StudyClient`, `KlineClient` (OHLCV source, fail-open contract —
+adapters MUST resolve with `[]` on error, never throw). Persistence (all `load(): Result` + mutators):
 `ConfigRepo`, `PositionRepo`, `PoolMemoryRepo`, `DecisionLogRepo`, `LessonRepo`,
 `StrategyRepo`, `SmartWalletRepo`, `TokenBlacklistRepo`, `DevBlocklistRepo`. Also
 `LLMClient`, `SageDecider` (Path 2 screening delegation — agentic, returns prose not
@@ -157,8 +170,10 @@ tool_calls), `Notifier`+`LiveMessageHandle`, `TelegramInbound`, `HiveMindClient`
 - `chain/dry-run.ts` — deterministic fake chain (no network); preserves cache/force/dedup.
 - `market/` — real: `jupiter-price-oracle` (**Jupiter Price v3** `lite-api.jup.ag/price/v3`,
   30s TTL, retry×2), `jupiter-token-info`, `meteora-pool-discovery`, `rugcheck`,
-  `meteora-smart-wallet-checker`, `agent-meridian-study`; test doubles: `fake-*`,
-  `static-price-oracle`.
+  `meteora-smart-wallet-checker`, `agent-meridian-study`, `geckoterminal-kline`
+  (keyless OHLCV, `api.geckoterminal.com/api/v2`, per-key 60s TTL + inflight dedup,
+  4s timeout, fails open on 429/5xx/malformed); test doubles: `fake-*`,
+  `static-price-oracle`, `fake-kline`.
 - `persistence/json/` — 9 repos over `atomic-write.ts` (temp+fsync+rename, crash-safe):
   `position-repo` (state.json; caps `recentEvents` to 20), `pool-memory-repo`,
   `lesson-repo`, `decision-log` (caps to 100), `strategy-repo`, `smart-wallet-repo`,
@@ -207,9 +222,9 @@ tool_calls), `Notifier`+`LiveMessageHandle`, `TelegramInbound`, `HiveMindClient`
 
 | Role | Tool list (`src/domain/prompt/role-tools.ts`) | Caller |
 |---|---|---|
-| `SCREENER` | `SCREENER_TOOLS` (12) — deploy + discovery/enrichment | `screening/cycle.ts:167`, `requireToolOnFirstStep:true` |
+| `SCREENER` | `SCREENER_TOOLS` (13) — deploy + discovery/enrichment + `get_pool_kline` | `screening/cycle.ts:167`, `requireToolOnFirstStep:true` |
 | `MANAGER` | `MANAGER_TOOLS` (5) — close/claim/swap + reads | `health/cycle.ts:65` (management cycle no longer uses this — it calls `executeTool` directly since 2026-08-02) |
-| `GENERAL` | `GENERAL_TOOLS` (10) | `telegram/router.ts:365`, `requireToolOnFirstStep:false` |
+| `GENERAL` | `GENERAL_TOOLS` (11) — includes `get_pool_kline` for ad-hoc TA in chat | `telegram/router.ts:365`, `requireToolOnFirstStep:false` |
 
 There is **no INTENT-pattern matcher** in the TS version — GENERAL is simply the
 `GENERAL_TOOLS` list. The dashboard `/chat` surface uses a separate read-only
@@ -265,8 +280,9 @@ Scheduled in `main()` (autonomous mode) via `createIntervalScheduler`:
 The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
 
 ### Screening cycle
-1. **Preflight**: wallet/positions(`force:true`)/strategy/decisions. Skip (write a
-   `skip` decision) if at `maxPositions` or `wallet.sol < deployAmountSol + gasReserve`.
+1. **Preflight**: wallet/positions(`force:true`)/strategy/decisions/`recentPerformance(50)`/`listLessons({limit:20})`.
+   Skip (write a `skip` decision) if at `maxPositions` or
+   `wallet.sol < deployAmountSol + gasReserve`.
 2. **Candidates**: `get_top_candidates` tool → discovery → `hardFilter` → `rankCandidates`.
 3. **0 candidates** → `no_deploy` decision, no LLM.
 4. **Diligence pre-enrichment** (added 2026-08-02): `enrichCandidates` fetches
@@ -274,7 +290,19 @@ The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
    with a 3s per-call timeout, fails open. Result is injected as a `diligence:` line
    per candidate in `formatCandidatesBlock`. This lets Sage's autonomous cycle veto
    / override on FRESH data without racing the 90s timeout on gmgn-cli side calls.
-5. **Decision** — two deciders, selected by `MERIDIAN_DECIDER`:
+5. **Technicals pre-enrichment** (added 2026-08-10, Phase 3b): `enrichTechnicals`
+   runs alongside diligence — per candidate × timeframe (`["5m","1h"]` by default),
+   parallel `market.kline.getKline`, 3.5s per-call timeout, fails open. Each result
+   is passed through pure `computeTechnicals` and rendered as a `technicals:` block
+   under the candidate line. Sage sees spike / support / trend / ATR / vol_spike
+   inline — no `mrd_get_pool_kline` call needed inside the delegation.
+6. **History injection**: `computeCandidateHistory` (per-candidate pool + base_mint
+   matches from `recentPerformance`) renders as a `history:` line; the aggregate
+   `computePortfolioAggregate` (buckets by strategy / volatility / entry_mcap over
+   last 30 closes) appends `PRIOR EXPERIENCE:` to the `goal` block. `── LESSONS ──`
+   (pinned + recent 5) is injected into both the local-loop `buildSystemPrompt` AND
+   the Sage `sageSystemPrompt`.
+7. **Decision** — two deciders, selected by `MERIDIAN_DECIDER`:
    - default (`loop`): SCREENER prompt + candidate block, `runAgentLoop` `maxSteps:8`,
      `requireToolOnFirstStep:true` — the local LLM must call `deploy_position` (or justify).
    - **`sage`** (Path 2): delegate to the external Sage agent via the `SageDecider` port
@@ -335,9 +363,9 @@ Telegram card. Cooldowns live in `pool-memory` + `rules/cooldown.ts`.
 
 | File | Repo | Owns |
 |---|---|---|
-| `state.json` | position-repo | tracked positions + recent-events ring (capped 20) |
+| `state.json` | position-repo | tracked positions (+`entry_technicals` since 2026-08-10) + recent-events ring (capped 20) |
 | `pool-memory.json` | pool-memory-repo | per-pool deploy history, win rates, cooldowns |
-| `lessons.json` | lesson-repo | lessons + performance records |
+| `lessons.json` | lesson-repo | lessons + performance records (PerformanceRecord now carries `base_mint`, `entry_technicals`, `exit_technicals`) |
 | `decision-log.json` | decision-log | rolling 100 decisions (deploy/close/skip/no_deploy/note) |
 | `strategy-library.json` | strategy-repo | saved strategies + active pointer |
 | `smart-wallets.json` | smart-wallet-repo | tracked KOL/alpha wallets (type lp\|holder) |
@@ -463,6 +491,22 @@ retired; env backups on the host at `~/meridian/.env.bak-sagebot-*`. See
   bins) is multi-tx with different slippage units per path.
 - **No `signal-weights` repo, no bin-array rent assert** (named in the legacy doc; never
   ported to TS).
+- **`add_lesson` sanitizer does NOT strip `<` `>`** — lessons render into LLM prompts,
+  never HTML, and comparators are load-bearing for TA rules ("1h ATR > 25%",
+  "from_high < -30%"). Fixed 2026-08-10 after 2 Sage-authored lessons had their
+  operators silently stripped. Whitespace + 500-char cap still applied.
+- **`at_local_top` is snapshot-in-time**, not stateful — reports whether current close
+  is within 2% of the max-high of the last `windowShort` candles. Retrospectives on
+  closed positions read it as "is this pool at a local top RIGHT NOW", NOT "was it at
+  entry". For historic entry context use `entry_technicals` on the PerformanceRecord
+  (captured by `track-position` post-hook at deploy) — same 12 fields as the live
+  compute, frozen at the entry timestamp.
+- **`enrichTechnicals` in screening cycle is fail-open** (same contract as
+  `enrichCandidates`) — a GT 429 or timeout drops the `technicals:` line for that
+  candidate, does NOT block the cycle. Zero candidates surviving diligence still
+  produces a `no_deploy` decision; zero surviving technicals still ships to the decider
+  with an empty `technicals:` line. Sage's veto rules see empty as "unknown" — this is
+  intentional (fail-open) but does mean a persistent GT outage hides the vetoes.
 
 ---
 
