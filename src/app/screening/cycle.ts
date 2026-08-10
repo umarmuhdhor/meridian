@@ -205,7 +205,8 @@ function formatCandidatesBlock(
       const mcap = p.pool.mcap != null ? ` mcap=$${p.pool.mcap.toFixed(0)}` : "";
       const holders = p.pool.holders != null ? ` holders=${p.pool.holders}` : "";
       const binStep = p.pool.bin_step != null ? ` bin_step=${p.pool.bin_step}` : "";
-      const base = `  [${i + 1}] ${p.pool.name}  pool=${p.pool.pool_address}  score=${p.score.toFixed(0)}  fee/aTVL=${(feeTvl * 100).toFixed(2)}%  vol=$${vol.toFixed(0)}  organic=${p.pool.organic_score ?? "?"}${mcap}${holders}${binStep}`;
+      const volSig = p.pool.volatility != null ? ` volatility=${p.pool.volatility.toFixed(3)}` : "";
+      const base = `  [${i + 1}] ${p.pool.name}  pool=${p.pool.pool_address}  score=${p.score.toFixed(0)}  fee/aTVL=${(feeTvl * 100).toFixed(2)}% (fee_tvl_ratio=${feeTvl.toFixed(4)})  vol=$${vol.toFixed(0)}  organic=${p.pool.organic_score ?? "?"}${mcap}${holders}${binStep}${volSig}`;
       const d = diligence?.[i];
       if (!d) return base;
       const parts: string[] = [];

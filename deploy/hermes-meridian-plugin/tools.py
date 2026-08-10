@@ -100,7 +100,14 @@ def _handle_get_candidates(args: dict, **kw) -> str:
 
 MRD_DEPLOY_SCHEMA = {
     "name": "mrd_deploy_position",
-    "description": "Deploy SOL into a Meridian DLMM pool (single-side SOL). Pass cycle_id verbatim if it appears in the task.",
+    "description": (
+        "Deploy SOL into a Meridian DLMM pool (single-side SOL). Pass cycle_id verbatim if it "
+        "appears in the task. ALWAYS forward the candidate's enrichment fields when they "
+        "appear in the candidate block — `bin_step`, `mcap`, `holders`, `organic_score`, "
+        "`fee_tvl_ratio`, `volatility`, `smart_wallets_present` — so the position record + "
+        "dashboard show real values (mcap range, holders at entry, fee/TVL, etc.) instead of "
+        "dashes. Missing them means the tracked position stores nulls for those fields."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -111,9 +118,29 @@ MRD_DEPLOY_SCHEMA = {
             "bins_above": _INT,
             "base_mint": _STR,
             "pool_name": _STR,
+            "bin_step": _INT,
+            "mcap": _NUM,
+            "holders": _INT,
+            "organic_score": _NUM,
+            "fee_tvl_ratio": _NUM,
+            "volatility": _NUM,
+            "smart_wallets_present": {"type": "boolean"},
             "cycle_id": _STR,
         },
-        "required": ["pool_address", "amount_sol", "strategy", "bins_below"],
+        "required": [
+            "pool_address",
+            "amount_sol",
+            "strategy",
+            "bins_below",
+            "pool_name",
+            "bin_step",
+            "mcap",
+            "holders",
+            "organic_score",
+            "fee_tvl_ratio",
+            "volatility",
+            "smart_wallets_present",
+        ],
     },
 }
 
