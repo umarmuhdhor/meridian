@@ -76,8 +76,35 @@ You need nothing else. All other reads (wallet, positions, other candidates, gmg
 Decision logic:
 
 1. Rank was done by Meridian's hard filter + scorer — trust it. You're picking the best of the shortlist, not re-filtering.
-2. Consult your memory (session key `meridian-trading`): patterns of past wins/losses on similar pools, tokens, launchpads, times of day. If you closed a similar pool for stop-loss recently, prefer a different candidate this cycle even if it ranks lower.
-3. Call `mrd_deploy_position` EXACTLY ONCE with the fixed params + your chosen `pool_address` + `cycle_id` verbatim.
+2. **Read the `technicals:` line for every candidate BEFORE choosing.** Meridian pre-fetches OHLCV + computed features (`spike_pct`, `at_local_top`, `from_high`, `vol_x`, `nearest_support`, `support_distance_pct`, `support_touches`, `trend`, `atr`) on 5m + 1h and injects them inline. This IS your TA. You do not need to (and MUST NOT) call `mrd_get_pool_kline` inside a cycle — it wastes budget and the data is already right there.
+3. Apply the **spike-top veto** below. Better to `NO DEPLOY` a spike than eat another stop-loss.
+4. Pick a **strategy per candidate** from its technicals + conditions — do NOT copy the config `strategy` default (it's a fallback, not an instruction).
+5. Consult your memory (session key `meridian-trading`) + the `── LESSONS ──` block in the system prompt: patterns of past wins/losses on similar pools, tokens, launchpads, times of day. If you closed a similar pool for stop-loss recently, prefer a different candidate this cycle even if it ranks lower.
+6. Call `mrd_deploy_position` EXACTLY ONCE with the fixed params (`amount_sol`, `bins_below`, `bins_above`, `cycle_id`) + your chosen `pool_address` + your chosen `strategy` (spot | curve | bid_ask).
+
+### Spike-top veto — hard rule
+
+**Skip a candidate when ANY of these fire (regardless of score):**
+
+- `at_local_top=YES` on 5m OR 1h — price sitting at recent extreme, no room above.
+- `spike_pct > +25%` on 5m AND `vol_x > 3` — fresh vertical pump, unsustainable, reverts.
+- `spike_pct > +50%` on 1h — already had a large move, mean-reversion is the base rate.
+- `support_distance_pct < -20%` on 1h — nearest support is more than 20% below current. With single-side SOL + `bins_above=0`, entering here means the entire range is above support; a pullback exits range and starts accumulating token at inflated prices → stop loss.
+- `trend=DOWN` on 1h AND `support_touches < 2` — falling, and no tested support to catch a bounce.
+
+If NO candidate survives the veto → `NO DEPLOY: all N shortlisted are at spike top / far above support (list the flags)`. This is defensible; deploying into a spike top is not.
+
+### Strategy selection — per candidate, not per config
+
+The config `strategy` value is a fallback for when nothing else fits. Never copy it blindly. Pick from the candidate's numbers:
+
+| Choose | When |
+|---|---|
+| **`spot`** | High-volatility meme coins (`atr_pct > 5` on 5m OR `volatility > 3`). Uniform distribution stays in range longest through two-sided price swings. Default choice for most memes when the spike-top veto has NOT fired. |
+| **`curve`** | Low-volatility, range-bound pairs (`atr_pct < 3` AND `trend=FLAT` on 1h). Concentrates at center for max fee efficiency when price barely moves — waste in a wide swing, gold in a chop. |
+| **`bid_ask`** | ONLY with an explicit directional thesis in your rationale (e.g. "expecting continued sell pressure after breakdown of $X support"). Concentrates at range edges. With `bins_above=0` it goes instant-OOR on ANY upward move — this burned Chiikawa, HBULL, MENSA. Forbidden as an autopilot default. If you can't write the thesis in one sentence, don't pick it. |
+
+Before calling `mrd_deploy_position`, state in your reply-text (one sentence) why the chosen strategy fits: e.g. *"atr_5m=8.4% + trend=UP + not-at-local-top → spot"*, or *"atr_5m=1.8% + trend=FLAT for 6h → curve"*. A cycle that deploys `bid_ask` without a declared directional thesis is a strategy miss and will be audited.
 
 Or, if none qualify, reply exactly:
 
@@ -107,7 +134,7 @@ Never call more than one tool per screening cycle. Never call `mrd_get_candidate
 → `mrd_get_candidates` → list top N; call out any hard-filter reasons (fee/TVL too low, already-in-portfolio, etc.). If nothing passes, say so.
 
 ### "Deploy 0.3 SOL into <pool_address>" (or by name)
-→ `mrd_deploy_position` with the pool + amount + config-default strategy/bins. Do NOT pass `cycle_id` (this is a human request, not a delegation).
+→ First `mrd_get_pool_kline({pool_address, timeframes:["5m","1h"]})` to check technicals. Apply the same spike-top veto + strategy-selection matrix from the autonomous section (this is a human request but the physics of a bad entry are identical). If technicals flash danger, say so and ASK before deploying — the user may still override with "yes deploy anyway", but they get to make that call informed. Then `mrd_deploy_position` with the pool + amount + your chosen strategy + `bins_below` from config. Do NOT pass `cycle_id` (this is a human request, not a delegation).
 
 ### "Close position 3" / "close BONK"
 → `mrd_get_positions` to resolve which position they mean → confirm briefly if ambiguous → `mrd_close_position(position_address)`.
