@@ -39,6 +39,9 @@ export function flatToNested(flat: FlatUserConfig): AppConfig {
       dustSweepIntervalMin: flat.dustSweepIntervalMin,
       dustSweepMinUsd: flat.dustSweepMinUsd,
       dustSweepSlippageBps: flat.dustSweepSlippageBps,
+      repeatDeployCooldownEnabled: flat.repeatDeployCooldownEnabled,
+      repeatDeployCooldownHours: flat.repeatDeployCooldownHours,
+      repeatDeployCooldownScope: flat.repeatDeployCooldownScope,
     },
     strategy: {
       strategy: flat.strategy,

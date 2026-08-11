@@ -413,13 +413,8 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       { rejected: dilRejected.map((r) => `${r.name} ${r.kind}=${r.value.toFixed(1)}%>${r.max}%`) },
     );
   }
-  const pickedFiltered = dilKept.map((i) => picked[i]!) as typeof picked;
-  const diligence = dilKept.map((i) => diligenceRaw[i]!);
-
-  // Pre-fetch OHLCV + compute technicals for the diligence-passing shortlist.
-  // Same fail-open contract as enrichCandidates — the decider gets whatever
-  // resolved in time; missing timeframes just render fewer lines.
-  const technicals = await enrichTechnicals(pickedFiltered, ctx);
+  let pickedFiltered = dilKept.map((i) => picked[i]!) as typeof picked;
+  let diligence = dilKept.map((i) => diligenceRaw[i]!);
 
   if (pickedFiltered.length === 0) {
     const reason = `All ${picked.length} shortlisted candidate(s) failed diligence caps (bot% > ${maxBot} or top10% > ${maxTop10}).`;
@@ -435,6 +430,62 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     });
     return { kind: "no_deploy", picked: 0, rejection_summary: dilRejected.map((r) => `${r.kind}_pct_too_high`) };
   }
+
+  // Pre-fetch OHLCV + compute technicals for the diligence-passing shortlist.
+  // Same fail-open contract as enrichCandidates — the decider gets whatever
+  // resolved in time; missing timeframes just render fewer lines.
+  let technicals = await enrichTechnicals(pickedFiltered, ctx);
+
+  // TA downtrend hard gate. If EVERY timeframe checked reports EMA DOWN, the
+  // token is bleeding on the timeframes that matter for a DLMM position — no
+  // amount of fee/TVL score justifies deploying into a sustained downtrend.
+  // Fail-open: if a timeframe returned null (no candles / rate limit), that row
+  // is ignored — decider still sees the technicals line. Reason for this gate:
+  // 2026-08-11 the daemon redeployed a token 1h after a -8.29% close because
+  // the local ranker only looks at fee/TVL, vol, organic.
+  const dtKept: number[] = [];
+  const dtRejected: Array<{ name: string; trends: string[] }> = [];
+  for (let i = 0; i < pickedFiltered.length; i++) {
+    const rows = technicals[i] ?? [];
+    const trends = rows.map((r) => r.trend).filter((t): t is "UP" | "DOWN" | "FLAT" => t != null);
+    const allDown = trends.length > 0 && trends.every((t) => t === "DOWN");
+    if (allDown) {
+      dtRejected.push({
+        name: pickedFiltered[i]?.pool.name ?? "?",
+        trends: rows.map((r) => `${r.timeframe}=${r.trend ?? "?"}`),
+      });
+      continue;
+    }
+    dtKept.push(i);
+  }
+  if (dtRejected.length > 0) {
+    ctx.logger.info(
+      "screening",
+      `downtrend filter dropped ${dtRejected.length}/${pickedFiltered.length}`,
+      { rejected: dtRejected.map((r) => `${r.name} ${r.trends.join(",")}`) },
+    );
+  }
+  if (dtKept.length === 0) {
+    const reason = `All ${pickedFiltered.length} diligence-passing candidate(s) are in EMA downtrend on every timeframe checked — refusing to deploy into bleeding charts.`;
+    await appendNoDeploy(ctx, {
+      summary: `Downtrend filter rejected all ${pickedFiltered.length} candidates`,
+      reason,
+      metrics: {
+        scanned: (candidates.value as TopCandidatesResult).scanned,
+        passed: (candidates.value as TopCandidatesResult).passed,
+        candidates: pickedFiltered.length,
+        rejected_downtrend: dtRejected.length,
+      },
+    });
+    return {
+      kind: "no_deploy",
+      picked: 0,
+      rejection_summary: dtRejected.map(() => "trend_down_all_timeframes"),
+    };
+  }
+  pickedFiltered = dtKept.map((i) => pickedFiltered[i]!) as typeof pickedFiltered;
+  diligence = dtKept.map((i) => diligence[i]!);
+  technicals = dtKept.map((i) => technicals[i]!);
 
   // Portfolio aggregate — bucketed win/loss stats over the last 30 closes. Shown as
   // context, NOT a rule: the decider may still deploy against a losing bucket if the

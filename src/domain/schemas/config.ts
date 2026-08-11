@@ -27,6 +27,9 @@ export const ManagementConfigSchema = z.object({
   dustSweepIntervalMin: z.number().int().min(1).max(1440).default(5),
   dustSweepMinUsd: z.number().nonnegative().default(0.01),
   dustSweepSlippageBps: z.number().int().min(1).max(10_000).default(500),
+  repeatDeployCooldownEnabled: z.boolean().default(true),
+  repeatDeployCooldownHours: z.number().nonnegative().default(12),
+  repeatDeployCooldownScope: z.enum(["pool", "token"]).default("token"),
 });
 export type ManagementConfig = z.infer<typeof ManagementConfigSchema>;
 

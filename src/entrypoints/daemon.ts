@@ -465,15 +465,19 @@ async function main(): Promise<void> {
     return llm.generalModel;
   };
 
-  // ── Sage delegation (env-gated; OFF by default) ──────────────────────────
-  // MERIDIAN_DECIDER=sage + a configured Sage endpoint → screening delegates the
-  // deploy decision to the external memory-backed agent, local LLM loop as fallback.
-  // Any missing piece → screeningExtra stays {} and the daemon runs exactly as before.
+  // ── Sage delegation — Sage is the final authority whenever creds are present.
+  // Enabled automatically when SAGE_BASE_URL + SAGE_API_KEY are set. Opt out
+  // explicitly with MERIDIAN_DECIDER=loop (kept for local debugging / dry runs).
+  // Prior behaviour required BOTH the env keys AND MERIDIAN_DECIDER=sage — the
+  // opt-in was silently absent in production, so the "screener SCREENER actor"
+  // path fell back to the local LLM loop and mechanically redeployed a token
+  // the user had just closed at -8.29% (2026-08-11 incident).
+  const sageEnabled = process.env.MERIDIAN_DECIDER !== "loop" && !!process.env.SAGE_BASE_URL && !!process.env.SAGE_API_KEY;
   const sageDecider: SageDecider | undefined =
-    process.env.MERIDIAN_DECIDER === "sage" && process.env.SAGE_BASE_URL && process.env.SAGE_API_KEY
+    sageEnabled
       ? createSageDeciderHttp({
-          baseUrl: process.env.SAGE_BASE_URL,
-          apiKey: process.env.SAGE_API_KEY,
+          baseUrl: process.env.SAGE_BASE_URL!,
+          apiKey: process.env.SAGE_API_KEY!,
           ...(process.env.SAGE_MODEL ? { model: process.env.SAGE_MODEL } : {}),
           ...(process.env.SAGE_CF_ACCESS_CLIENT_ID && process.env.SAGE_CF_ACCESS_CLIENT_SECRET
             ? {

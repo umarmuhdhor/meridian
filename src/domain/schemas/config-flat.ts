@@ -40,6 +40,14 @@ export const FlatUserConfigSchema = z
     dustSweepMinUsd: z.number().nonnegative().default(0.01),
     dustSweepSlippageBps: z.number().int().min(1).max(10_000).default(500),
 
+    // redeploy cooldown — every successful close writes cooldown_until on the pool
+    // memory entry so the same pool can't be redeployed inside the window. scope
+    // "token" also writes base_mint_cooldown_until (blocks ALL pools for that token).
+    // Prevents the "daemon redeployed a token Sage just closed at a loss" class of bug.
+    repeatDeployCooldownEnabled: z.boolean().default(true),
+    repeatDeployCooldownHours: z.number().nonnegative().default(12),
+    repeatDeployCooldownScope: z.enum(["pool", "token"]).default("token"),
+
     // strategy — Sage picks per candidate (see screening/cycle.ts). `strategy` here
     // is only the fallback for legacy positions / Telegram REPL, and the label the
     // dashboard shows as the "AI default".
