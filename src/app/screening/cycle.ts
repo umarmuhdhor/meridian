@@ -436,56 +436,88 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
   // resolved in time; missing timeframes just render fewer lines.
   let technicals = await enrichTechnicals(pickedFiltered, ctx);
 
-  // TA downtrend hard gate. If EVERY timeframe checked reports EMA DOWN, the
-  // token is bleeding on the timeframes that matter for a DLMM position — no
-  // amount of fee/TVL score justifies deploying into a sustained downtrend.
-  // Fail-open: if a timeframe returned null (no candles / rate limit), that row
-  // is ignored — decider still sees the technicals line. Reason for this gate:
-  // 2026-08-11 the daemon redeployed a token 1h after a -8.29% close because
-  // the local ranker only looks at fee/TVL, vol, organic.
-  const dtKept: number[] = [];
-  const dtRejected: Array<{ name: string; trends: string[] }> = [];
+  // TA hard gate — four failure modes, ALL fail-closed:
+  //   1. downtrend      → every non-null trend reports EMA DOWN
+  //   2. missing_trend  → every timeframe returned null (too new / wild candles)
+  //   3. atr_extreme    → any timeframe atr_pct > maxAtrPct (deploying into insane vol)
+  //   4. spike_top      → any timeframe spike_pct > maxSpikePct AND at_local_top
+  //                       (buying the exact top of a pump)
+  // 2026-08-11: daemon redeployed a -8.29% loser 1h after close (fixed by cooldown +
+  // downtrend gate). 2026-08-13: K-HOME (280x pump, 43% ATR, +57% spike, all trends
+  // null) sailed through the downtrend-only gate's fail-open path. This is the fix.
+  const maxAtr = ctx.config.screening.maxAtrPct;
+  const maxSpike = ctx.config.screening.maxSpikePct;
+  const rejectMissingTrend = ctx.config.screening.rejectOnMissingTrend;
+  const taKept: number[] = [];
+  const taRejected: Array<{ name: string; kind: string; detail: string }> = [];
   for (let i = 0; i < pickedFiltered.length; i++) {
     const rows = technicals[i] ?? [];
+    const name = pickedFiltered[i]?.pool.name ?? "?";
     const trends = rows.map((r) => r.trend).filter((t): t is "UP" | "DOWN" | "FLAT" => t != null);
-    const allDown = trends.length > 0 && trends.every((t) => t === "DOWN");
-    if (allDown) {
-      dtRejected.push({
-        name: pickedFiltered[i]?.pool.name ?? "?",
-        trends: rows.map((r) => `${r.timeframe}=${r.trend ?? "?"}`),
+    if (trends.length === 0 && rejectMissingTrend) {
+      taRejected.push({ name, kind: "missing_trend", detail: "all timeframes returned null" });
+      continue;
+    }
+    if (trends.length > 0 && trends.every((t) => t === "DOWN")) {
+      taRejected.push({
+        name,
+        kind: "downtrend",
+        detail: rows.map((r) => `${r.timeframe}=${r.trend ?? "?"}`).join(","),
       });
       continue;
     }
-    dtKept.push(i);
+    const badAtr = rows.find((r) => r.atr_pct != null && r.atr_pct > maxAtr);
+    if (badAtr) {
+      taRejected.push({
+        name,
+        kind: "atr_extreme",
+        detail: `${badAtr.timeframe} atr=${badAtr.atr_pct!.toFixed(1)}%>${maxAtr}%`,
+      });
+      continue;
+    }
+    const spikeTop = rows.find(
+      (r) => r.spike_pct != null && r.spike_pct > maxSpike && r.at_local_top === true,
+    );
+    if (spikeTop) {
+      taRejected.push({
+        name,
+        kind: "spike_top",
+        detail: `${spikeTop.timeframe} spike=+${spikeTop.spike_pct!.toFixed(1)}% at_top`,
+      });
+      continue;
+    }
+    taKept.push(i);
   }
-  if (dtRejected.length > 0) {
+  if (taRejected.length > 0) {
     ctx.logger.info(
       "screening",
-      `downtrend filter dropped ${dtRejected.length}/${pickedFiltered.length}`,
-      { rejected: dtRejected.map((r) => `${r.name} ${r.trends.join(",")}`) },
+      `TA gate dropped ${taRejected.length}/${pickedFiltered.length}`,
+      { rejected: taRejected.map((r) => `${r.name} ${r.kind}(${r.detail})`) },
     );
   }
-  if (dtKept.length === 0) {
-    const reason = `All ${pickedFiltered.length} diligence-passing candidate(s) are in EMA downtrend on every timeframe checked — refusing to deploy into bleeding charts.`;
+  if (taKept.length === 0) {
+    const kinds = [...new Set(taRejected.map((r) => r.kind))].join("+");
+    const reason = `All ${pickedFiltered.length} diligence-passing candidate(s) failed the TA gate (${kinds}). Rejected: ${taRejected.map((r) => `${r.name}=${r.kind}`).join(", ")}.`;
     await appendNoDeploy(ctx, {
-      summary: `Downtrend filter rejected all ${pickedFiltered.length} candidates`,
+      summary: `TA gate rejected all ${pickedFiltered.length} candidates (${kinds})`,
       reason,
       metrics: {
         scanned: (candidates.value as TopCandidatesResult).scanned,
         passed: (candidates.value as TopCandidatesResult).passed,
         candidates: pickedFiltered.length,
-        rejected_downtrend: dtRejected.length,
+        rejected_ta: taRejected.length,
+        rejected_kinds: kinds,
       },
     });
     return {
       kind: "no_deploy",
       picked: 0,
-      rejection_summary: dtRejected.map(() => "trend_down_all_timeframes"),
+      rejection_summary: taRejected.map((r) => `ta_${r.kind}`),
     };
   }
-  pickedFiltered = dtKept.map((i) => pickedFiltered[i]!) as typeof pickedFiltered;
-  diligence = dtKept.map((i) => diligence[i]!);
-  technicals = dtKept.map((i) => technicals[i]!);
+  pickedFiltered = taKept.map((i) => pickedFiltered[i]!) as typeof pickedFiltered;
+  diligence = taKept.map((i) => diligence[i]!);
+  technicals = taKept.map((i) => technicals[i]!);
 
   // Portfolio aggregate — bucketed win/loss stats over the last 30 closes. Shown as
   // context, NOT a rule: the decider may still deploy against a losing bucket if the
