@@ -75,6 +75,7 @@ export function flatToNested(flat: FlatUserConfig): AppConfig {
       capitulationFromHighPct: flat.capitulationFromHighPct,
       capitulationSupportDistPct: flat.capitulationSupportDistPct,
       capitulationAtrPct: flat.capitulationAtrPct,
+      technicalsWindowShort: flat.technicalsWindowShort,
       allowedLaunchpads: flat.allowedLaunchpads,
       blockedLaunchpads: flat.blockedLaunchpads,
       minTokenAgeHours: flat.minTokenAgeHours,

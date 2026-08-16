@@ -83,6 +83,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
   f("capitulationFromHighPct", "number", "screening", { unit: "%", help: "Capitulation gate — how deep from window high counts as 'deep drop'. 40 = >40% drop. ALL 3 capitulation knobs must trigger to reject." }),
   f("capitulationSupportDistPct", "number", "screening", { unit: "%", help: "Capitulation gate — how far from nearest support counts as 'no floor'. 10 = support >10% away = no bounce zone." }),
   f("capitulationAtrPct", "number", "screening", { unit: "%", help: "Capitulation gate — how low ATR counts as 'dead vol'. 15 = swings <15% = no fees even on reversal." }),
+  f("technicalsWindowShort", "number", "screening", { unit: "candles", help: "Lookback (candles per timeframe) for spike / local-top / from_high / vol_spike. 20 = last 20 candles. Adaptive: for young tokens, shrinks to what's available (floor = minTokenAgeHours or 3)." }),
   f("allowedLaunchpads", "array", "screening", { unit: "list", help: "Comma-separated launchpads to allow. Empty = allow all." }),
   f("blockedLaunchpads", "array", "screening", { unit: "list", help: "Comma-separated launchpads to reject (e.g. letsbonk.fun)." }),
   f("minTokenAgeHours", "number", "screening", { unit: "hours", help: "Min token age in hours. Blank = no floor." }),

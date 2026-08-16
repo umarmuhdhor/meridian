@@ -22,8 +22,14 @@ import type { KlineCandle, KlineTimeframe, TechnicalsSummary } from "../schemas/
  */
 
 export interface TechnicalsOptions {
-  /** Window used for spike, local top/bottom, vol_spike. Default 20. */
+  /** Window used for spike, local top/bottom, from_window_high_pct, vol_spike. Default 20. */
   windowShort?: number;
+  /**
+   * Adaptive floor: for young tokens with fewer candles than `windowShort`, the effective
+   * window shrinks to `min(windowShort, candles.length)`. If the effective window is below
+   * this floor, all windowShort-dependent features stay null. Default 3.
+   */
+  windowMin?: number;
   /** EMA long span for trend detection. Default 50. */
   emaLong?: number;
   /** EMA short span for trend detection. Default 20. */
@@ -42,6 +48,7 @@ export interface TechnicalsOptions {
 
 const DEFAULTS: Required<TechnicalsOptions> = {
   windowShort: 20,
+  windowMin: 3,
   emaLong: 50,
   emaShort: 20,
   atrPeriod: 14,
@@ -130,16 +137,22 @@ export function computeTechnicals(
   const last = candles[candles.length - 1]!;
   base.last_close = last.c;
 
-  // ── spike (last vs mean of the prior windowShort) ────────────────────────
-  if (candles.length >= o.windowShort + 1) {
-    const prior = candles.slice(-o.windowShort - 1, -1);
+  // Adaptive window — young tokens without a full `windowShort` history still get a
+  // meaningful reading (shrunk to what's available). Features that need a "prior"
+  // slice (spike, vol_spike) additionally require `effectiveWindow + 1` candles.
+  const effectiveWindow = Math.min(o.windowShort, candles.length);
+  const canWindow = effectiveWindow >= o.windowMin;
+
+  // ── spike (last vs mean of the prior effectiveWindow) ────────────────────
+  if (canWindow && candles.length >= effectiveWindow + 1) {
+    const prior = candles.slice(-effectiveWindow - 1, -1);
     const meanPrior = prior.reduce((s, k) => s + k.c, 0) / prior.length;
     if (meanPrior > 0) base.spike_pct = ((last.c - meanPrior) / meanPrior) * 100;
   }
 
-  // ── local top / bottom (within extremeTolPct of extreme of last windowShort) ──
-  if (candles.length >= o.windowShort) {
-    const window = candles.slice(-o.windowShort);
+  // ── local top / bottom + from_window_high (last effectiveWindow) ─────────
+  if (canWindow) {
+    const window = candles.slice(-effectiveWindow);
     const maxH = Math.max(...window.map((k) => k.h));
     const minL = Math.min(...window.map((k) => k.l));
     if (maxH > 0) {
@@ -154,8 +167,8 @@ export function computeTechnicals(
   if (a != null && last.c > 0) base.atr_pct = (a / last.c) * 100;
 
   // ── volume spike ────────────────────────────────────────────────────────
-  if (candles.length >= o.windowShort + 1) {
-    const prior = candles.slice(-o.windowShort - 1, -1);
+  if (canWindow && candles.length >= effectiveWindow + 1) {
+    const prior = candles.slice(-effectiveWindow - 1, -1);
     const meanVol = prior.reduce((s, k) => s + k.v, 0) / prior.length;
     if (meanVol > 0) base.vol_spike = last.v / meanVol;
   }

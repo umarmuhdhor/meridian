@@ -115,6 +115,14 @@ async function enrichTechnicals(
       new Promise<null>((resolve) => setTimeout(() => resolve(null), SCREENING_KLINE_TIMEOUT_MS)),
     ]);
 
+  const windowShort = ctx.config.screening.technicalsWindowShort;
+  // Reuse minTokenAgeHours as the adaptive floor (candle count). If the age gate is off
+  // (null), fall back to 3 so results stay meaningful. `minTokenAgeHours` is expressed
+  // in hours; on the 1h timeframe that's a 1:1 candle-count floor. On finer timeframes
+  // (5m) it's trivially satisfied — a token old enough to pass the age gate always has
+  // ≥ minTokenAgeHours candles at 5m.
+  const windowMin = Math.max(3, Math.floor(ctx.config.screening.minTokenAgeHours ?? 3));
+
   return Promise.all(
     picked.map(async (p): Promise<CandidateTechnicals> => {
       const rows = await Promise.all(
@@ -122,7 +130,7 @@ async function enrichTechnicals(
           const candles = await timeout(
             ctx.market.kline.getKline(p.pool.pool_address, tf, { limit: SCREENING_KLINE_LIMIT }),
           ).catch(() => null);
-          return computeTechnicals(candles ?? [], tf);
+          return computeTechnicals(candles ?? [], tf, { windowShort, windowMin });
         }),
       );
       return rows;

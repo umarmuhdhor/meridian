@@ -88,6 +88,10 @@ export const FlatUserConfigSchema = z
     capitulationFromHighPct: z.number().min(0).default(40),
     capitulationSupportDistPct: z.number().min(0).default(10),
     capitulationAtrPct: z.number().min(0).default(15),
+    // Technicals lookback (candles per timeframe). Controls spike_pct, at_local_top/bottom,
+    // from_window_high_pct, vol_spike. Adaptive: for tokens younger than windowShort candles,
+    // shrinks to min(windowShort, candles.length). Floor = `minTokenAgeHours` (or 3 if null).
+    technicalsWindowShort: z.number().int().min(3).default(20),
     allowedLaunchpads: z.array(z.string()).default([]),
     blockedLaunchpads: z.array(z.string()).default([]),
     minTokenAgeHours: z.number().nonnegative().nullable().default(null),
