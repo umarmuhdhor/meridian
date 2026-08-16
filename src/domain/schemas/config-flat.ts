@@ -79,6 +79,15 @@ export const FlatUserConfigSchema = z
     maxAtrPct: z.number().min(0).default(20),
     maxSpikePct: z.number().min(0).default(25),
     rejectOnMissingTrend: z.boolean().default(true),
+    // Capitulation gate — replaces the binary "every-timeframe DOWN" veto with a
+    // magnitude+context check. Rejects only when ALL true on 1h: trend=DOWN AND
+    // from_window_high_pct < -capitulationFromHighPct AND support_distance_pct >
+    // capitulationSupportDistPct AND atr_pct < capitulationAtrPct. Shallow dip,
+    // near-support, or high-vol downtrends pass — those are the reversal / bin-sweep
+    // setups DLMM farms fees from.
+    capitulationFromHighPct: z.number().min(0).default(40),
+    capitulationSupportDistPct: z.number().min(0).default(10),
+    capitulationAtrPct: z.number().min(0).default(15),
     allowedLaunchpads: z.array(z.string()).default([]),
     blockedLaunchpads: z.array(z.string()).default([]),
     minTokenAgeHours: z.number().nonnegative().nullable().default(null),

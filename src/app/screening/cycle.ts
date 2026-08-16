@@ -448,6 +448,9 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
   const maxAtr = ctx.config.screening.maxAtrPct;
   const maxSpike = ctx.config.screening.maxSpikePct;
   const rejectMissingTrend = ctx.config.screening.rejectOnMissingTrend;
+  const capFromHigh = ctx.config.screening.capitulationFromHighPct;
+  const capSupportDist = ctx.config.screening.capitulationSupportDistPct;
+  const capAtr = ctx.config.screening.capitulationAtrPct;
   const taKept: number[] = [];
   const taRejected: Array<{ name: string; kind: string; detail: string }> = [];
   for (let i = 0; i < pickedFiltered.length; i++) {
@@ -459,12 +462,25 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       continue;
     }
     if (trends.length > 0 && trends.every((t) => t === "DOWN")) {
-      taRejected.push({
-        name,
-        kind: "downtrend",
-        detail: rows.map((r) => `${r.timeframe}=${r.trend ?? "?"}`).join(","),
-      });
-      continue;
+      // Capitulation gate — reject only when the downtrend is BOTH deep AND
+      // out of reversal range: deep drawdown from window high, far from support,
+      // and dead vol. Shallow dips, near-support setups, and high-vol downtrends
+      // pass — those are the bin-sweep / reversal plays DLMM farms fees from.
+      const t1h = rows.find((r) => r.timeframe === "1h");
+      const fromHigh = t1h?.from_window_high_pct;
+      const supportDist = t1h?.support_distance_pct;
+      const atr = t1h?.atr_pct;
+      const deepDrawdown = fromHigh != null && fromHigh < -capFromHigh;
+      const noSupport = supportDist != null && supportDist > capSupportDist;
+      const deadVol = atr != null && atr < capAtr;
+      if (deepDrawdown && noSupport && deadVol) {
+        taRejected.push({
+          name,
+          kind: "capitulation",
+          detail: `1h from_high=${fromHigh!.toFixed(1)}% support_dist=${supportDist!.toFixed(1)}% atr=${atr!.toFixed(1)}%`,
+        });
+        continue;
+      }
     }
     const badAtr = rows.find((r) => r.atr_pct != null && r.atr_pct > maxAtr);
     if (badAtr) {
@@ -633,10 +649,19 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       "            choice for meme coins.",
       "  - curve → range-bound, low volatility (<2), stable pairs. Concentrates at center for",
       "            max fee efficiency when price barely moves.",
-      "  - bid_ask → ONLY when you have an explicit directional thesis (dumping, DCA-out, or",
-      "              price expected to decline). Concentrates at edges; with bins_above=0 it",
-      "              goes instant-OOR on ANY upward price move — this burned Chiikawa, HBULL,",
-      "              MENSA. Forbidden as an autopilot default.",
+      "  - bid_ask → ONLY with an explicit directional thesis. TWO valid theses: (1) dumping /",
+      "              DCA-out / price expected to decline; (2) REVERSAL SETUP — downtrend",
+      "              approaching support (support_distance_pct < 5%) with high vol (atr_pct > 20%),",
+      "              expect bin sweep + bounce, concentrate at lower bins to catch fees on the flush.",
+      "              With bins_above=0 it goes instant-OOR on ANY upward price move — this burned",
+      "              Chiikawa, HBULL, MENSA when deployed as autopilot. Forbidden without a stated thesis.",
+      "",
+      "DOWNTREND HANDLING — a plain 1h DOWN is NOT a veto. DLMM farms fees on volatility crossing",
+      "bin range; a downtrend near support with high ATR is a reversal / bin-sweep setup, EXACTLY",
+      "what you want. Only veto capitulation: 1h DOWN + from_window_high_pct < -40% + support_distance",
+      "> 10% + atr_pct < 15% (deep drop, no bounce, dead vol — nothing to farm even if it reverses).",
+      "The code TA gate already fail-closes on capitulation; your job is to distinguish shallow-dip /",
+      "near-support / high-vol downtrends (deploy, often bid_ask with reversal thesis) from slow bleed.",
       "Before calling mrd_deploy_position you MUST state, in one sentence, why the chosen",
       "strategy fits the candidate's volatility (e.g. \"volatility 5.2, meme → spot\").",
       "A cycle that deploys bid_ask without a declared directional thesis in your rationale is",
