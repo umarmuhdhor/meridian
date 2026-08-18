@@ -74,12 +74,30 @@ function DecisionRow({ d }: { d: Decision }) {
               <div>
                 <div className="mb-1 text-text-tertiary">Rejected candidates ({d.rejected.length}):</div>
                 <ul className="flex flex-col gap-1">
-                  {d.rejected.map((r, i) => (
-                    <li key={i} className="flex flex-wrap gap-2">
-                      <span className="font-mono text-text-secondary">{r.pool_name || r.name || r.pool || "candidate"}</span>
-                      <span className="text-text-tertiary">{r.reason || "-"}</span>
-                    </li>
-                  ))}
+                  {d.rejected.map((r, i) => {
+                    let name: string;
+                    let reason: string;
+                    if (typeof r === "string") {
+                      const sep = r.indexOf(" — ");
+                      if (sep >= 0) {
+                        name = r.slice(0, sep).trim();
+                        reason = r.slice(sep + 3).trim();
+                      } else {
+                        name = "candidate";
+                        reason = r;
+                      }
+                    } else {
+                      name = r.pool_name || r.name || r.pool || "candidate";
+                      reason = r.reason || "-";
+                    }
+                    return (
+                      <li key={i} className="flex flex-wrap gap-2">
+                        <span className="font-mono text-text-secondary">{name}</span>
+                        <span className="text-text-tertiary">—</span>
+                        <span className="text-text-tertiary">{reason || "-"}</span>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             ) : null}

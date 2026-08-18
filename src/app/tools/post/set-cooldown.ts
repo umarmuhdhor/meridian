@@ -24,10 +24,16 @@ export const setCooldownOnCloseHook: PostHook<
   const poolAddress = result.pool_address;
   if (!poolAddress) return;
 
+  // Only cool down after losses. Profitable closes leave the pool immediately re-deployable.
+  const pnlPct = result.final_pnl_pct;
+  if (pnlPct != null && pnlPct >= 0) {
+    ctx.logger.info("cooldown", `skip cooldown ${poolAddress.slice(0, 8)} — closed in profit (${pnlPct.toFixed(2)}%)`);
+    return;
+  }
+
   const now = ctx.clock.now();
   const until = new Date(now.getTime() + cfg.repeatDeployCooldownHours * 60 * 60 * 1000).toISOString();
-  const pnl = result.final_pnl_pct;
-  const reason = `closed ${pnl != null ? `at ${pnl.toFixed(2)}%` : ""} (${args.reason}) — ${cfg.repeatDeployCooldownHours}h no-redeploy window`;
+  const reason = `closed ${pnlPct != null ? `at ${pnlPct.toFixed(2)}%` : ""} (${args.reason}) — ${cfg.repeatDeployCooldownHours}h no-redeploy window`;
 
   const existing = await ctx.repos.poolMemory.get(poolAddress);
   const baseMint = existing?.base_mint ?? result.base_mint ?? null;

@@ -162,7 +162,7 @@ export interface Decision {
   reason?: string;
   risks?: string[];
   metrics?: Record<string, unknown>;
-  rejected?: RejectedCandidate[];
+  rejected?: (RejectedCandidate | string)[];
 }
 
 export interface DecisionLogFile {
