@@ -177,7 +177,7 @@ profile dir — Hermes sets `HERMES_HOME` to the profile when run with `-p sage`
   saves on user confirmation. Lessons flow back through the LESSONS block from Phase 1.
 - **2026-08-10 (Phase 3)** — technical analysis. New `KlineClient` port +
   `geckoterminal-kline` adapter (keyless OHLCV, 60s TTL, fail-open). `enrichTechnicals`
-  runs alongside `enrichCandidates` per screening cycle — 5m + 1h computed features
+  runs alongside `enrichCandidates` per screening cycle — 15m + 1h computed features
   (spike_pct, at_local_top, ATR%, vol_spike, trend, support proximity + touches)
   inline as a `technicals:` line per candidate. New `mrd_get_pool_kline` plugin tool
   (12 → 13) for interactive analysis. `PerformanceRecord.entry_technicals` +

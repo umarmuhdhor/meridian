@@ -90,7 +90,7 @@ interface Diligence {
 /** Technicals per shortlisted candidate — one entry per configured timeframe, fail-open. */
 type CandidateTechnicals = TechnicalsSummary[];
 
-const SCREENING_TIMEFRAMES: readonly KlineTimeframe[] = ["5m", "1h"] as const;
+const SCREENING_TIMEFRAMES: readonly KlineTimeframe[] = ["15m", "1h"] as const;
 const SCREENING_KLINE_LIMIT = 100;
 const SCREENING_KLINE_TIMEOUT_MS = 3_500;
 

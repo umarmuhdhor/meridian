@@ -4,7 +4,7 @@ import type { PerformanceRecord } from "../../../domain/schemas/lesson.js";
 import type { KlineTimeframe, TechnicalsSummary } from "../../../domain/schemas/kline.js";
 import { computeTechnicals } from "../../../domain/format/technicals.js";
 
-const EXIT_TECHNICALS_TIMEFRAMES: readonly KlineTimeframe[] = ["5m", "1h"] as const;
+const EXIT_TECHNICALS_TIMEFRAMES: readonly KlineTimeframe[] = ["15m", "1h"] as const;
 const EXIT_TECHNICALS_LIMIT = 100;
 const EXIT_TECHNICALS_TIMEOUT_MS = 3_500;
 

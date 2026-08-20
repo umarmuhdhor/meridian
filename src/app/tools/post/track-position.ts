@@ -4,7 +4,7 @@ import type { TrackedPosition } from "../../../domain/schemas/position.js";
 import type { KlineTimeframe, TechnicalsSummary } from "../../../domain/schemas/kline.js";
 import { computeTechnicals } from "../../../domain/format/technicals.js";
 
-const ENTRY_TECHNICALS_TIMEFRAMES: readonly KlineTimeframe[] = ["5m", "1h"] as const;
+const ENTRY_TECHNICALS_TIMEFRAMES: readonly KlineTimeframe[] = ["15m", "1h"] as const;
 const ENTRY_TECHNICALS_LIMIT = 100;
 const ENTRY_TECHNICALS_TIMEOUT_MS = 3_500;
 

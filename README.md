@@ -40,7 +40,7 @@ rollback (`git checkout legacy-js`).
   Every screening cycle injects `── LESSONS ──` (pinned + recent 5), per-candidate
   `history:` (pool + base_mint match against prior closes), a `PRIOR EXPERIENCE:`
   portfolio aggregate (wins/losses bucketed by strategy / volatility / entry_mcap),
-  and inline `technicals:` (5m + 1h OHLCV features from GeckoTerminal) into the
+  and inline `technicals:` (15m + 1h OHLCV features from GeckoTerminal) into the
   Sage delegation prompt.
 - **Retrospective loop** — `mrd_get_performance` + `mrd_get_decisions` +
   `mrd_add_lesson` (plugin tools) power the Telegram flow *"we had N losses in

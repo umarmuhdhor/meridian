@@ -28,7 +28,7 @@ export const getPoolKlineTool = defineTool({
   args: z.object({
     pool_address: z.string().min(1),
     /** One or more timeframes. Default 5m + 1h — same pair screening pre-fetches. */
-    timeframes: z.array(KlineTimeframeSchema).min(1).max(6).default(["5m", "1h"]),
+    timeframes: z.array(KlineTimeframeSchema).min(1).max(6).default(["15m", "1h"]),
     /** Candle count per timeframe (1-500, default 100). More = deeper support/trend but larger payload. */
     limit: z.number().int().min(1).max(500).default(100),
   }),

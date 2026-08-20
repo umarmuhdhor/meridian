@@ -291,7 +291,10 @@ The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
    per candidate in `formatCandidatesBlock`. This lets Sage's autonomous cycle veto
    / override on FRESH data without racing the 90s timeout on gmgn-cli side calls.
 5. **Technicals pre-enrichment** (added 2026-08-10, Phase 3b): `enrichTechnicals`
-   runs alongside diligence — per candidate × timeframe (`["5m","1h"]` by default),
+   runs alongside diligence — per candidate × timeframe (`["15m","1h"]` by default,
+   changed from `["5m","1h"]` 2026-08-20: 5m too noisy on DLMM + swapping in 15m
+   makes `rejectOnMissingTrend` naturally catch <12.5h tokens since neither 15m nor
+   1h will have EMA50 populated),
    parallel `market.kline.getKline`, 3.5s per-call timeout, fails open. Each result
    is passed through pure `computeTechnicals` and rendered as a `technicals:` block
    under the candidate line. Sage sees spike / support / trend / ATR / vol_spike
