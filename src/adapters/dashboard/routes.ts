@@ -98,32 +98,10 @@ export async function handleRequest(
         rRaw.positions.map(async (op) => {
           if (!op || typeof op !== "object" || !("position" in op) || typeof op.position !== "string") return op;
           try {
-            const tracked = await ctx.repos.positions.get(op.position);
-            if (!tracked) return op;
-            const nowMs = ctx.clock.now().getTime();
-            const deployedMs = Date.parse(tracked.deployed_at);
-            const ageMinutes = Number.isFinite(deployedMs)
-              ? Math.max(0, Math.round((nowMs - deployedMs) / 60_000))
-              : (op as { age_minutes?: number | null }).age_minutes ?? null;
-            // Derive pnl_usd from total_value_usd × pnl_pct so the UI has a
-            // dollar figure. On-chain client only supplies pnl_pct +
-            // total_value_usd; prefer (total - initial) when tracked has
-            // initial_value_usd, else back it out algebraically:
-            //   entry = total / (1 + pnl_pct/100)
-            //   pnl_usd = total - entry = total × pnl_pct / (100 + pnl_pct)
-            const totalUsd = (op as { total_value_usd?: number | null }).total_value_usd ?? null;
-            const pnlPct = (op as { pnl_pct?: number | null }).pnl_pct ?? null;
-            let derivedPnlUsd: number | null = null;
-            if (totalUsd != null && tracked.initial_value_usd != null) {
-              derivedPnlUsd = Math.round((totalUsd - tracked.initial_value_usd) * 100) / 100;
-            } else if (totalUsd != null && pnlPct != null && 100 + pnlPct !== 0) {
-              derivedPnlUsd = Math.round(((totalUsd * pnlPct) / (100 + pnlPct)) * 100) / 100;
-            }
-            // Best-effort live pool lookup so the Mcap-range column has a
-            // reference point (and bin_step for the price ratios) even when
-            // Sage didn't pass entry_mcap / bin_step at deploy or the
-            // position pre-dates that capture. Pool discovery caches ~1 min
-            // so the extra call is cheap in a poll loop.
+            // Live pool lookup first (bin_step / mcap / holders / organic).
+            // Runs regardless of tracked state — pool detail is cached ~1min so
+            // the extra call is cheap, and we need bin_step whether or not the
+            // position is in state.json.
             let currentMcap: number | null = null;
             let livePoolBinStep: number | null = null;
             let liveHolders: number | null = null;
@@ -142,7 +120,6 @@ export async function handleRequest(
                 // non-fatal
               }
             }
-            // Base-mint token info as a second-chance fallback for mcap.
             if (currentMcap == null) {
               const baseMint = (op as { base_mint?: string | null }).base_mint ?? null;
               if (baseMint) {
@@ -154,25 +131,117 @@ export async function handleRequest(
                 }
               }
             }
+
+            // Inline reconcile: if the position isn't in state.json (deployed
+            // pre-hook, external UI, or before management cycle ticked), upsert
+            // a minimal tracked record right now so the dashboard stops showing
+            // "-" for tracked-side fields between deploys and the next
+            // management tick. Mirrors the forward-reconcile in
+            // src/app/management/cycle.ts:114 — kept in sync intentionally.
+            let tracked = await ctx.repos.positions.get(op.position);
+            if (!tracked) {
+              const nowIso = ctx.clock.now().toISOString();
+              const opAny = op as {
+                pool?: string;
+                pair?: string | null;
+                lower_bin?: number;
+                upper_bin?: number;
+                active_bin?: number;
+                total_value_usd?: number | null;
+                fee_per_tvl_24h?: number | null;
+                deposit_sol?: number | null;
+                deposit_usd?: number | null;
+              };
+              // Prefer Meteora datapi's cumulative deposit for `amount_sol` +
+              // `initial_value_usd` — recovers the true entry values for
+              // externally-opened / pre-hook positions. Falls back to current
+              // total (wrong number, but at least present) when datapi is cold.
+              const depositSol = opAny.deposit_sol ?? null;
+              const depositUsd = opAny.deposit_usd ?? null;
+              try {
+                await ctx.repos.positions.upsert({
+                  position: op.position,
+                  pool: opAny.pool ?? poolAddr ?? "",
+                  pool_name: opAny.pair ?? null,
+                  strategy: ctx.config.strategy.strategy,
+                  bin_range: {
+                    lower_bin: opAny.lower_bin ?? 0,
+                    upper_bin: opAny.upper_bin ?? 0,
+                  },
+                  amount_sol: depositSol ?? 0,
+                  amount_x: 0,
+                  active_bin_at_deploy: opAny.active_bin ?? null,
+                  bin_step: livePoolBinStep,
+                  volatility: null,
+                  fee_tvl_ratio: null,
+                  initial_fee_tvl_24h: opAny.fee_per_tvl_24h ?? null,
+                  organic_score: liveOrganic,
+                  initial_value_usd: depositUsd ?? opAny.total_value_usd ?? null,
+                  entry_mcap: currentMcap,
+                  holders_at_entry: liveHolders,
+                  smart_wallets_present: null,
+                  entry_technicals: null,
+                  deployed_at: nowIso,
+                  out_of_range_since: null,
+                  last_claim_at: null,
+                  total_fees_claimed_usd: 0,
+                  rebalance_count: 0,
+                  closed: false,
+                  closed_at: null,
+                  notes: ["reconciled from dashboard (untracked on-chain position)"],
+                  peak_pnl_pct: 0,
+                  trailing_active: false,
+                });
+                tracked = await ctx.repos.positions.get(op.position);
+              } catch {
+                // non-fatal — fall through to the live-only enrichment
+              }
+            }
+            // Mark records that came from reconcile (no deploy-hook context ever
+            // captured) so the UI can label them "external" instead of rendering
+            // "-" for fields that can't be recovered from chain (volatility,
+            // fee_tvl_ratio, smart_wallets_present, entry_technicals).
+            const isReconciled = !!tracked?.notes?.some((n) => n.startsWith("reconciled"));
+
+            const nowMs = ctx.clock.now().getTime();
+            const deployedMs = tracked ? Date.parse(tracked.deployed_at) : NaN;
+            const ageMinutes = Number.isFinite(deployedMs)
+              ? Math.max(0, Math.round((nowMs - deployedMs) / 60_000))
+              : (op as { age_minutes?: number | null }).age_minutes ?? null;
+            // Derive pnl_usd from total_value_usd × pnl_pct so the UI has a
+            // dollar figure. Prefer (total - initial) when tracked has
+            // initial_value_usd, else back it out algebraically:
+            //   entry = total / (1 + pnl_pct/100)
+            //   pnl_usd = total - entry = total × pnl_pct / (100 + pnl_pct)
+            const totalUsd = (op as { total_value_usd?: number | null }).total_value_usd ?? null;
+            const pnlPct = (op as { pnl_pct?: number | null }).pnl_pct ?? null;
+            let derivedPnlUsd: number | null = null;
+            if (totalUsd != null && tracked?.initial_value_usd != null) {
+              derivedPnlUsd = Math.round((totalUsd - tracked.initial_value_usd) * 100) / 100;
+            } else if (totalUsd != null && pnlPct != null && 100 + pnlPct !== 0) {
+              derivedPnlUsd = Math.round(((totalUsd * pnlPct) / (100 + pnlPct)) * 100) / 100;
+            }
+
             return {
               ...op,
               ...(derivedPnlUsd != null ? { pnl_usd: derivedPnlUsd } : {}),
-              pool_name: tracked.pool_name ?? (op as { pool_name?: string | null }).pool_name ?? null,
-              strategy: tracked.strategy ?? (op as { strategy?: string }).strategy,
-              deployed_at: tracked.deployed_at,
+              pool_name: tracked?.pool_name ?? (op as { pool_name?: string | null }).pool_name ?? (op as { pair?: string | null }).pair ?? null,
+              strategy: tracked?.strategy ?? (op as { strategy?: string }).strategy,
+              deployed_at: tracked?.deployed_at ?? null,
               age_minutes: ageMinutes,
-              amount_sol_initial: tracked.amount_sol,
-              initial_value_usd: tracked.initial_value_usd ?? null,
-              entry_mcap: tracked.entry_mcap ?? null,
+              amount_sol_initial: tracked?.amount_sol ?? null,
+              initial_value_usd: tracked?.initial_value_usd ?? null,
+              entry_mcap: tracked?.entry_mcap ?? null,
               current_mcap: currentMcap,
-              holders_at_entry: tracked.holders_at_entry ?? liveHolders,
-              smart_wallets_present: tracked.smart_wallets_present ?? null,
-              bin_step: tracked.bin_step ?? livePoolBinStep,
-              volatility: tracked.volatility ?? null,
-              fee_tvl_ratio: tracked.fee_tvl_ratio ?? null,
-              organic_score: tracked.organic_score ?? liveOrganic,
-              active_bin_at_deploy: tracked.active_bin_at_deploy ?? null,
-              peak_pnl_pct: tracked.peak_pnl_pct ?? null,
+              holders_at_entry: tracked?.holders_at_entry ?? liveHolders,
+              smart_wallets_present: tracked?.smart_wallets_present ?? null,
+              bin_step: tracked?.bin_step ?? livePoolBinStep,
+              volatility: tracked?.volatility ?? null,
+              fee_tvl_ratio: tracked?.fee_tvl_ratio ?? null,
+              organic_score: tracked?.organic_score ?? liveOrganic,
+              active_bin_at_deploy: tracked?.active_bin_at_deploy ?? null,
+              peak_pnl_pct: tracked?.peak_pnl_pct ?? null,
+              source: isReconciled ? "external" : "deploy",
             };
           } catch {
             return op;

@@ -43,7 +43,14 @@ function DetailItem({ label, value }: { label: string; value: React.ReactNode })
   );
 }
 
+// Deploy-hook-only fields have no on-chain source. On externally-opened
+// positions render "external" (muted) instead of "-" so users know why the cell
+// is blank — the position was opened outside Meridian's deploy flow, not that
+// tracking broke.
+const EXTERNAL_LABEL = <span className="text-text-tertiary italic">external</span>;
+
 function OpenPositionDetail({ p }: { p: Position }) {
+  const isExternal = p.source === "external";
   // Reference bin for price ratios: active_bin_at_deploy (top of range for
   // single-side SOL). Falls back to upper_bin.
   const refBin = p.active_bin_at_deploy ?? p.upper_bin ?? null;
@@ -133,16 +140,27 @@ function OpenPositionDetail({ p }: { p: Position }) {
         <DetailItem label="Organic score" value={p.organic_score != null ? p.organic_score.toFixed(0) : DASH} />
         <DetailItem
           label="Fee/TVL at entry"
-          value={p.fee_tvl_ratio != null ? p.fee_tvl_ratio.toFixed(4) : DASH}
+          value={p.fee_tvl_ratio != null ? p.fee_tvl_ratio.toFixed(4) : isExternal ? EXTERNAL_LABEL : DASH}
         />
-        <DetailItem label="Volatility" value={p.volatility != null ? p.volatility.toFixed(2) : DASH} />
+        <DetailItem
+          label="Volatility"
+          value={p.volatility != null ? p.volatility.toFixed(2) : isExternal ? EXTERNAL_LABEL : DASH}
+        />
         <DetailItem
           label="Holders at entry"
           value={p.holders_at_entry != null ? compact(p.holders_at_entry) : DASH}
         />
         <DetailItem
           label="Smart wallets"
-          value={p.smart_wallets_present == null ? DASH : p.smart_wallets_present ? "present" : "none"}
+          value={
+            p.smart_wallets_present == null
+              ? isExternal
+                ? EXTERNAL_LABEL
+                : DASH
+              : p.smart_wallets_present
+                ? "present"
+                : "none"
+          }
         />
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-text-tertiary">

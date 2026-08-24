@@ -29,6 +29,11 @@ export const OnChainPositionSchema = z.object({
   bin_step: z.number().int().optional(),
   amount_sol: z.number().optional(),
   deployed_at: z.string().optional(),
+  /** Sum of all deposits into this position, per Meteora datapi. Populated when
+   *  the datapi enricher is wired (real chain client). Recovers `initial_value_usd`
+   *  / `amount_sol` for externally-opened / pre-hook positions during reconcile. */
+  deposit_sol: z.number().nullable().optional(),
+  deposit_usd: z.number().nullable().optional(),
 });
 export type OnChainPosition = z.infer<typeof OnChainPositionSchema>;
 

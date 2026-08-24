@@ -364,6 +364,8 @@ export function createMeteoraChainClient(opts: MeteoraChainClientOptions): Chain
           total_value_usd: totalValueUsd,
           fee_per_tvl_24h: null,
           age_minutes: null,
+          deposit_sol: datapi?.depositSol ?? null,
+          deposit_usd: datapi?.depositUsd ?? null,
         });
       }
     }

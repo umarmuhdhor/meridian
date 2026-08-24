@@ -41,6 +41,11 @@ export interface Position {
   fee_tvl_ratio?: number | null;
   organic_score?: number | null;
   active_bin_at_deploy?: number | null;
+  /** "deploy" = tracked from Meridian's own deploy_position hook (full context).
+   *  "external" = reconciled from chain (Meteora UI / pre-hook / another wallet path)
+   *  — deploy-hook-only fields (volatility, fee_tvl_ratio, smart_wallets_present)
+   *  cannot be recovered and should render "external" instead of "-". */
+  source?: "deploy" | "external";
 }
 
 export interface PositionsResponse {
