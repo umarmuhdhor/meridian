@@ -103,22 +103,26 @@ describe("runScreeningCycle — Sage delegation", () => {
     expect(ds[0]?.reason).toContain("none qualify");
   });
 
-  it("falls back to the local loop when Sage errors WITHOUT deploying", async () => {
+  it("skips the cycle (NO local-loop fallback) when Sage errors WITHOUT deploying", async () => {
+    // Regression: prior behaviour let the local loop deploy on Sage timeout, which
+    // opened Sue on 2026-08-26 despite Sage vetoing that pattern for 7 hours. The
+    // fallback is now killed — a Sage outage yields a no_deploy decision, not a
+    // rogue open from a screener with zero memory of Sage's vetoes.
     const { ctx } = makeSetup();
     const sage: SageDecider = { async decide() { throw new Error("sage down"); } };
-    const llm = createFakeLLM({
-      script: [
-        { kind: "tool_calls", calls: [{ name: "deploy_position", args: DEPLOY_ARGS }] },
-        { kind: "assistant", text: "deployed via fallback" },
-      ],
-    });
+    // Loaded but must NOT be invoked — assert by empty script (any call throws).
+    const llm = createFakeLLM({ script: [] });
     const outcome = await runScreeningCycle({
       ctx, llm, registry: REGISTRY, model: "test", decider: "sage", sage,
     });
-    expect(outcome.kind).toBe("invoked"); // fallback path
-    if (outcome.kind === "invoked") {
-      expect(outcome.agent.toolCalls.find((t) => t.name === "deploy_position")?.ok).toBe(true);
-    }
+    expect(outcome.kind).toBe("delegated");
+    if (outcome.kind === "delegated") expect(outcome.deployed).toBe(false);
+    const snap = await ctx.chain.getMyPositions({ force: true });
+    expect(snap.positions.length).toBe(0);
+    const ds = await ctx.repos.decisions.recent(1);
+    expect(ds[0]?.type).toBe("no_deploy");
+    expect(ds[0]?.reason).toContain("Sage delegation failed");
+    expect(ds[0]?.reason).toContain("fallback disabled");
   });
 
   it("does NOT fall back (no double deploy) when Sage errors AFTER deploying", async () => {

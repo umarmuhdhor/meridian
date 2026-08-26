@@ -14,7 +14,7 @@ function nextId(now: Date): string {
 }
 
 /** Post-hook: append a deploy decision after every successful deploy_position call. */
-export function logDeployDecision(actor: DecisionActor): PostHook<{
+export function logDeployDecision(defaultActor: DecisionActor): PostHook<{
   pool_address: string;
   pool_name?: string | undefined;
   amount_sol: number;
@@ -23,6 +23,10 @@ export function logDeployDecision(actor: DecisionActor): PostHook<{
 }, DeployResult> {
   return async (args, result, ctx) => {
     if (!result.success) return;
+    // Per-call actor + rationale from the caller (screening cycle / bridge).
+    // Falls back to the registered default (SCREENER) only when unset.
+    const actor = ctx.deployMeta?.actor ?? defaultActor;
+    const callerRationale = ctx.deployMeta?.rationale?.trim() || null;
     // Enrich pool_name from the tracked position when the caller (typically Sage
     // via mrd_deploy_position) forgot to include it — trackDeployedPosition runs
     // BEFORE this hook, so state.json already has the record for this position.
@@ -50,7 +54,7 @@ export function logDeployDecision(actor: DecisionActor): PostHook<{
       pool_name: sanitizeDecisionText(poolName, 120),
       position: result.position_address,
       summary: sanitizeDecisionText(formatDeploySummary(input)),
-      reason: sanitizeDecisionText(formatDeployReason(input), 500),
+      reason: sanitizeDecisionText(callerRationale ?? formatDeployReason(input), 500),
       risks: [],
       metrics: {
         amount_sol: args.amount_sol,
@@ -65,9 +69,13 @@ export function logDeployDecision(actor: DecisionActor): PostHook<{
 }
 
 /** Post-hook: append a close decision after every successful close_position call. */
-export function logCloseDecision(actor: DecisionActor): PostHook<{ position_address: string; reason: string }, CloseResult> {
+export function logCloseDecision(defaultActor: DecisionActor): PostHook<{ position_address: string; reason: string }, CloseResult> {
   return async (args, result, ctx) => {
     if (!result.success) return;
+    // Same per-call attribution as deploys — bridge / screening / management can
+    // scope ctx with deployMeta to tag the true actor + carry Sage's rationale.
+    const actor = ctx.deployMeta?.actor ?? defaultActor;
+    const callerRationale = ctx.deployMeta?.rationale?.trim() || null;
     // Enrich pool_name from the tracked position — the close_position tool doesn't
     // receive it in args, but track-position wrote it at deploy time.
     const tracked = await ctx.repos.positions.get(args.position_address);
@@ -89,7 +97,7 @@ export function logCloseDecision(actor: DecisionActor): PostHook<{ position_addr
       pool_name: sanitizeDecisionText(poolName, 120),
       position: args.position_address,
       summary: sanitizeDecisionText(formatCloseSummary(input)),
-      reason: sanitizeDecisionText(formatCloseReason(input), 500),
+      reason: sanitizeDecisionText(callerRationale ?? formatCloseReason(input), 500),
       risks: [],
       metrics: {
         pnl_pct: result.final_pnl_pct,

@@ -322,12 +322,13 @@ export async function handleRequest(
     } catch {
       return json(res, 400, { error: "invalid json" });
     }
-    const { name, args = {}, confirm = false, cycle_id } =
+    const { name, args = {}, confirm = false, cycle_id, rationale } =
       (body as {
         name?: string;
         args?: Record<string, unknown>;
         confirm?: boolean;
         cycle_id?: string;
+        rationale?: string;
       }) || {};
     if (!name) return json(res, 400, { error: "missing name" });
     if (!isAllowedTool(name)) return json(res, 403, { error: `tool not allowed: ${name}` });
@@ -355,7 +356,38 @@ export async function handleRequest(
     try {
       if (write) log.info("dashboard", `tool=${name}`); // one line only; executeTool audits internally
       const adaptedArgs = adaptArgs(name, args ?? {});
-      const outcome = await executeTool(registry, { name, args: adaptedArgs }, ctx);
+      // Attribution for deploy/close post-hooks. cycle_id present → autonomous
+      // delegation cycle (Sage). Absent → user-triggered chat/dashboard action.
+      // Without this the post-hook falls back to SCREENER, which is wrong for
+      // both bridge paths and made every deploy look daemon-authored (2026-08-26).
+      const callCtx =
+        name === "deploy_position" || name === "close_position"
+          ? {
+              ...ctx,
+              deployMeta: {
+                actor: (cycleId ? "SAGE" : "GENERAL") as "SAGE" | "GENERAL",
+                ...(typeof rationale === "string" && rationale.trim()
+                  ? { rationale: rationale.trim().slice(0, 2000) }
+                  : {}),
+              },
+            }
+          : ctx;
+      // Loud warning when a Sage cycle deploys/closes without a rationale —
+      // the log entry will fall back to the generic template, which is
+      // exactly the auditability gap that hid the Sue deploy on 2026-08-26.
+      // Prompts require rationale, but a rollout / model drift could silently
+      // drop it; log so ops can spot it before the next incident.
+      if (
+        (name === "deploy_position" || name === "close_position") &&
+        cycleId &&
+        (typeof rationale !== "string" || !rationale.trim())
+      ) {
+        log.warn(
+          "dashboard",
+          `${name} from Sage (cycle=${cycleId}) missing rationale — decision log will show generic template`,
+        );
+      }
+      const outcome = await executeTool(registry, { name, args: adaptedArgs }, callCtx);
       if (outcome.ok) {
         // Commit the idempotency key only on success, so a failed write stays retryable.
         if (write && cycleId) bridgeIdempotency.commit(cycleId);

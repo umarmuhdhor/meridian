@@ -206,7 +206,14 @@ export async function runManagementCycle(deps: ManagementCycleDeps): Promise<Man
             args: { position_address: plan.position.position },
           };
 
-    const r = await executeTool(registry, invocation, ctx);
+    // Scoped ctx so the close decision is logged with actor=MANAGER +
+    // the deterministic plan's rationale (e.g. "stop-loss triggered:
+    // pnl -20% <= -18%"), not the generic close template.
+    const mgmtCtx = {
+      ...ctx,
+      deployMeta: { actor: "MANAGER" as const, rationale: plan.reason },
+    };
+    const r = await executeTool(registry, invocation, mgmtCtx);
     if (r.ok) {
       results.push({ plan, ok: true });
       ctx.logger.info(

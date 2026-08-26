@@ -79,10 +79,18 @@ def post_tool(
     args: dict,
     confirm: bool = False,
     cycle_id: Optional[str] = None,
+    rationale: Optional[str] = None,
     timeout: float = 60.0,
 ) -> Any:
-    """POST /tool. Writes require confirm=True; cycle_id gives idempotent writes."""
+    """POST /tool. Writes require confirm=True; cycle_id gives idempotent writes.
+    rationale (deploy/close only) is written to Meridian's decision log as the
+    caller's reason and pins the actor tag (SAGE when cycle_id set, else GENERAL).
+    Without rationale the log falls back to the generic spot template — that is
+    the bug that hid Sage's Sue deploy on 2026-08-26.
+    """
     body: dict = {"name": name, "args": args, "confirm": confirm}
     if cycle_id:
         body["cycle_id"] = cycle_id
+    if rationale:
+        body["rationale"] = rationale
     return _request("POST", "/tool", body, timeout)

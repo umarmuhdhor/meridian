@@ -18,6 +18,7 @@ import type { SmartWalletChecker } from "../../ports/smart-wallet-checker.js";
 import type { StudyClient } from "../../ports/study-client.js";
 import type { KlineClient } from "../../ports/kline-client.js";
 import type { AppConfig } from "../../domain/schemas/config.js";
+import type { DecisionActor } from "../../domain/schemas/decision.js";
 
 /**
  * Everything a tool needs to execute. Assembled once at daemon boot and passed by reference
@@ -50,5 +51,15 @@ export interface AppContext {
     smartWallets: SmartWalletRepo;
     tokenBlacklist: TokenBlacklistRepo;
     devBlocklist: DevBlocklistRepo;
+  };
+  /**
+   * Per-call attribution for deploy/close post-hooks. Set by the caller
+   * (screening cycle for local-loop deploys, bridge /tool for Sage/human
+   * deploys) via a scoped ctx clone; read by log-decision post-hooks.
+   * Absent → post-hook falls back to the tool's registered default actor.
+   */
+  deployMeta?: {
+    actor: DecisionActor;
+    rationale?: string;
   };
 }

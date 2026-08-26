@@ -102,11 +102,15 @@ MRD_DEPLOY_SCHEMA = {
     "name": "mrd_deploy_position",
     "description": (
         "Deploy SOL into a Meridian DLMM pool (single-side SOL). Pass cycle_id verbatim if it "
-        "appears in the task. ALWAYS forward the candidate's enrichment fields when they "
-        "appear in the candidate block — `bin_step`, `mcap`, `holders`, `organic_score`, "
-        "`fee_tvl_ratio`, `volatility`, `smart_wallets_present` — so the position record + "
-        "dashboard show real values (mcap range, holders at entry, fee/TVL, etc.) instead of "
-        "dashes. Missing them means the tracked position stores nulls for those fields."
+        "appears in the task. ALWAYS pass `rationale` (2-3 sentences: why this candidate, why "
+        "this strategy, which prior lesson/veto you're honoring or overriding) — it is written "
+        "to Meridian's decision log as your reason and pins the entry as actor=SAGE. Without "
+        "it, the log shows the generic spot template and the user cannot audit whether YOU "
+        "deployed or a fallback did (the exact bug that hid the Sue deploy on 2026-08-26). "
+        "ALSO forward the candidate's enrichment fields when they appear in the candidate "
+        "block — `bin_step`, `mcap`, `holders`, `organic_score`, `fee_tvl_ratio`, "
+        "`volatility`, `smart_wallets_present` — so the position record + dashboard show real "
+        "values (mcap range, holders at entry, fee/TVL, etc.) instead of dashes."
     ),
     "parameters": {
         "type": "object",
@@ -126,6 +130,7 @@ MRD_DEPLOY_SCHEMA = {
             "volatility": _NUM,
             "smart_wallets_present": {"type": "boolean"},
             "cycle_id": _STR,
+            "rationale": _STR,
         },
         "required": [
             "pool_address",
@@ -148,9 +153,22 @@ MRD_DEPLOY_SCHEMA = {
 def _handle_deploy(args: dict, **kw) -> str:
     try:
         cycle_id = args.get("cycle_id")
-        payload = {k: v for k, v in args.items() if k != "cycle_id" and v is not None}
+        rationale = args.get("rationale")
+        payload = {
+            k: v
+            for k, v in args.items()
+            if k not in ("cycle_id", "rationale") and v is not None
+        }
         payload.setdefault("bins_above", 0)
-        return tool_result(post_tool("deploy_position", payload, confirm=True, cycle_id=cycle_id))
+        return tool_result(
+            post_tool(
+                "deploy_position",
+                payload,
+                confirm=True,
+                cycle_id=cycle_id,
+                rationale=rationale,
+            )
+        )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 

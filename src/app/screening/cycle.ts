@@ -575,10 +575,18 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     return after.positions.some((p) => !beforeIds.has(p.position));
   };
 
-  // The local LLM ReAct loop — the default decider AND the fallback when Sage fails.
+  // The local LLM ReAct loop — the default decider (no longer a Sage fallback;
+  // fallback was killed 2026-08-26 after the Sue incident where a Sage timeout
+  // let the local loop deploy a token Sage had been vetoing for 7 hours).
   const runLocalLoop = async (): Promise<ScreeningOutcome> => {
+    // Scoped ctx so any deploy_position call inside the loop tags actor=SCREENER
+    // and carries the LLM's rationale — NOT the generic spot template.
+    const loopCtx = {
+      ...ctx,
+      deployMeta: { actor: "SCREENER" as const },
+    };
     const agent = await runAgentLoop(
-      { llm, registry, ctx },
+      { llm, registry, ctx: loopCtx },
       {
         role: "SCREENER",
         goal,
@@ -642,8 +650,15 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       "To deploy, call mrd_deploy_position EXACTLY ONCE with: pool_address (from the chosen",
       "candidate), pool_name (the human-readable name from the candidate line, e.g. \"BONK-SOL\"),",
       "amount_sol, strategy (YOUR choice — see STRATEGY SELECTION below, do NOT default to the",
-      "config value), bins_below (given below), bins_above=0, and cycle_id (verbatim from the",
-      "task). Passing pool_name is REQUIRED — decision-log cards read address prefixes as",
+      "config value), bins_below (given below), bins_above=0, cycle_id (verbatim from the",
+      "task), AND rationale (2-3 sentences: WHY this candidate, WHY this strategy, WHICH prior",
+      "lesson/veto you're overriding or honoring). The rationale is written to Meridian's",
+      "decision log as actor=SAGE — this is how you (and the user) later verify that YOU",
+      "deployed this position, not the local screener fallback. A deploy WITHOUT a rationale",
+      "field appears in the log as an anonymous SAGE call with the generic spot template as",
+      "the reason — that is the failure mode that made the user unable to audit your Sue",
+      "deploy on 2026-08-26. ALWAYS pass rationale.",
+      "Passing pool_name is REQUIRED — decision-log cards read address prefixes as",
       "gibberish; pool_name is what shows up in the dashboard.",
       "ALSO pass the candidate's diligence context so the position history renders",
       "properly: mcap (from the candidate line), holders (from diligence: holders=N),",
@@ -749,13 +764,32 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     } catch (err) {
       const msg = (err as Error)?.message ?? String(err);
       // Transport/timeout. If Sage already deployed before dying, do NOT fall back
-      // (that would double-deploy). Only fall back when no new position landed.
+      // (that would double-deploy). Only log — the deploy is already on the books.
       if (await detectDeploy()) {
         ctx.logger.warn("screening", `sage errored after a deploy landed — NOT falling back (${msg})`);
         return { kind: "delegated", picked: picked.length, deployed: true, text: "(sage errored after deploy)" };
       }
-      ctx.logger.warn("screening", `sage delegation failed, falling back to local loop: ${msg}`);
-      return runLocalLoop();
+      // Fallback KILLED 2026-08-26 (Sue incident). Sage timing out ≠ authorization to
+      // deploy from the local loop, which has zero memory of Sage's prior vetoes and
+      // will happily open a token Sage was rejecting. Skip the cycle; next tick tries
+      // Sage again. Human can /deploy manually via Telegram if the outage drags on.
+      ctx.logger.warn("screening", `sage delegation failed — skipping cycle (fallback disabled): ${msg}`);
+      const topPicks = picked
+        .slice(0, 3)
+        .map((p) => `${p.pool.name} (score ${p.score.toFixed(0)})`)
+        .join(", ");
+      await appendNoDeploy(ctx, {
+        summary: `Sage unreachable — cycle skipped (${picked.length} candidate${picked.length === 1 ? "" : "s"} unreviewed)`,
+        reason: [
+          `Sage delegation failed (${msg}).`,
+          topPicks ? `Candidates deferred to next cycle: ${topPicks}.` : "",
+          "Local-loop fallback disabled — a Sage timeout is NOT authorization to deploy without Sage's veto memory.",
+        ]
+          .filter(Boolean)
+          .join(" "),
+        metrics: { scanned, passed, candidates: picked.length, decider: "sage", sage_error: msg },
+      });
+      return { kind: "delegated", picked: picked.length, deployed: false, text: `(sage unreachable: ${msg})` };
     }
   }
 
