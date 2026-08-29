@@ -83,6 +83,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
   f("capitulationFromHighPct", "number", "screening", { unit: "%", help: "Capitulation gate — how deep from window high counts as 'deep drop'. 40 = >40% drop. ALL 3 capitulation knobs must trigger to reject." }),
   f("capitulationSupportDistPct", "number", "screening", { unit: "%", help: "Capitulation gate — how far from nearest support counts as 'no floor'. 10 = support >10% away = no bounce zone." }),
   f("capitulationAtrPct", "number", "screening", { unit: "%", help: "Capitulation gate — how low ATR counts as 'dead vol'. 15 = swings <15% = no fees even on reversal." }),
+  f("maxFromHighPct", "number", "screening", { unit: "%", help: "Standalone drawdown veto (TREND-INDEPENDENT). Reject a candidate priced more than this % below its window high on ANY timeframe — even if the last candles bounce (trend=UP). 35 = >35% below high = skip. Catches dead-cat-bounce entries the capitulation gate misses. Set 30 to also veto ~-33% entries." }),
   f("technicalsWindowShort", "number", "screening", { unit: "candles", help: "Lookback (candles per timeframe) for spike / local-top / from_high / vol_spike. 20 = last 20 candles. Adaptive: for young tokens, shrinks to what's available (floor = minTokenAgeHours or 3)." }),
   f("allowedLaunchpads", "array", "screening", { unit: "list", help: "Comma-separated launchpads to allow. Empty = allow all." }),
   f("blockedLaunchpads", "array", "screening", { unit: "list", help: "Comma-separated launchpads to reject (e.g. letsbonk.fun)." }),
@@ -104,6 +105,16 @@ export const CONFIG_FIELDS: ConfigField[] = [
   f("trailingTriggerPct", "number", "exit", { unit: "%", help: "Arm the trailing stop once peak PnL reaches this %." }),
   f("trailingDropPct", "number", "exit", { unit: "%", help: "Close if PnL drops this % from its peak (after arming)." }),
   f("outOfRangeWaitMinutes", "number", "exit", { unit: "minutes", help: "How long a position may sit out-of-range before closing." }),
+
+  // ── exit rules · smart-exit regime engine (dark by default) ──
+  f("smartExitEnabled", "boolean", "exit", { help: "MASTER SWITCH for the regime-aware exit engine. false = legacy static stopLossPct only. true = CATASTROPHIC/DYING/HEALTHY classification replaces the static stop (take-profit + OOR + low-yield unchanged). Watch the shadow regime logs first, then arm this. Arm sageExitEnabled separately, after." }),
+  f("exitHardFloorPct", "number", "exit", { unit: "%", help: "Smart-exit only. Catastrophic floor — ALWAYS close at/below this PnL (unconditional backstop). -25 = -25%. Keep DEEPER than stopLossPct (stopLossPct is the attention threshold; this is the hard cap)." }),
+  f("exitOorProxyPct", "number", "exit", { unit: "%", help: "Smart-exit only. 30s poller fast-cut: an out-of-range-BELOW position at/below this PnL closes immediately, without waiting for the 10-min cycle. -12 = -12%." }),
+  f("dyingConsecutiveRed", "number", "exit", { unit: "candles", help: "Smart-exit only. N trailing red candles + near-zero fee velocity = DYING = cut early. 4 = four red candles in a row." }),
+  f("dyingAtrCollapsePct", "number", "exit", { unit: "%", help: "Smart-exit only. 1h ATR below this = dead vol (nothing to farm even on a reversal). Part of the DYING test. 10 = <10% ATR." }),
+  f("healthyFeeVelocityMin", "number", "exit", { unit: "ratio", help: "Smart-exit only. HEALTHY hold: an in-range position earning ≥ this fee/TVL velocity is HELD past the stop to let fees work. 12 ≈ 2× the low-yield floor (minFeePerTvl24h)." }),
+  f("sageExitEnabled", "boolean", "exit", { help: "Smart-exit only. Consult Sage on AMBIGUOUS positions (hold-or-cut verdict). false = deterministic conditional fallback (in-range HOLD / out-of-range CLOSE). Requires smartExitEnabled=true. Arm AFTER you trust the deterministic regimes." }),
+  f("sageExitCooldownMin", "number", "exit", { unit: "minutes", help: "Smart-exit only. A position escalates to Sage at most once per this many minutes. 20 = 20 min." }),
 
   // ── rebalance / sweep ──
   f("minFeePerTvl24h", "number", "rebalance", { unit: "ratio", help: "Min 24h fee/TVL before a position is closed as low-yield." }),
