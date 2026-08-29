@@ -18,6 +18,8 @@
 | **Runtime** | Docker: `meridian`, `meridian-web` (2 containers). Reverse proxy = vivobook's shared `caddy` + `cloudflared` (already running for other services). `docker compose` (no sudo needed; user in `docker` group). |
 | **Trading** | LIVE — real wallet, `DRY_RUN=false`, `MERIDIAN_WRITE_UNSAFE=true` |
 | **Screening decider** | **Sage** (Hermes agent on same host), `MERIDIAN_DECIDER=sage`, intra-docker delegation via `host.docker.internal:8643` → `sage-api-proxy` (socat) → `hermes:8642`. Local LLM loop is the fallback. |
+| **Entry gate** | `maxFromHighPct` (default 35) — trend-independent drawdown veto in screening; rejects candidates >35% below window high on any TF. Added 2026-08-29. |
+| **Exit engine** | Smart-exit regime engine (`smartExitEnabled`) — CATASTROPHIC/DYING/HEALTHY/AMBIGUOUS classifier replacing the static stop; AMBIGUOUS escalates to Sage (`sageExitEnabled`, advisory CLOSE/HOLD). **Dark by default**; armed via dashboard Config → Exit rules. Design: [`SPEC-2026-08-29-smart-exit-regime-engine.md`](SPEC-2026-08-29-smart-exit-regime-engine.md). |
 | **Telegram** | Single bot: **@SageHermesAnd_bot** posts BOTH Sage's replies AND Meridian's deploy/close cards. Meridian's `TELEGRAM_BOT_TOKEN` = Sage's bot token (swapped 2026-08-02 — Calisto bot retired). `MERIDIAN_TELEGRAM_INBOUND=false` so only Hermes polls the token (avoids `getUpdates` 409). |
 | **Dashboard** | https://calisto.nafidinara.com (Cloudflare Access + 6-digit PIN) |
 | **Deploy** | push to `dashboard` → GitHub Actions (`ubuntu-latest`) → GHCR + `scp`/`ssh` to vivobook over Cloudflare Access SSH → `deploy.sh` |
@@ -242,10 +244,21 @@ boots demo adapters (fake market, static $150 price).**
 
 - Flat trading params (thresholds, sizing, intervals, per-role models). Loaded at
   boot; mounted into the container at `/app/user-config.json`.
-- **Gotcha — the inode trap:** it's a single-file bind mount. Editing/rsyncing it
-  swaps the inode, so the running container keeps the OLD file. Apply changes with
-  `sudo docker compose up -d --force-recreate meridian` (or edit live via Telegram
-  `/set`, which reloads without a restart).
+- **Gotcha — the inode trap:** it's a single-file bind mount. A host-side edit that
+  writes-new-then-renames (most editors, `rsync`, `scp`, `python json.dump`+`os.replace`)
+  SWAPS the inode, so the running container keeps the OLD file until recreate. For a
+  MANUAL host edit apply with `docker compose up -d --force-recreate meridian`, OR edit
+  in place (`python -c` that opens the same file `"w"` / truncates), OR go through the
+  dashboard.
+- **Dashboard saves persist correctly (fixed 2026-08-29).** `update_config` (dashboard
+  Config page, Telegram `/set`) writes with `writeJsonAtomic {inPlace:true}` — it
+  overwrites the existing inode (copyFile O_TRUNC), so the change hits the host file AND
+  live-reloads the daemon with no restart. Before the fix, saves silently reverted:
+  temp+rename created a detached inode inside the container (in-memory updated, host file
+  unchanged, reverted on next restart, `meridian-web` showed stale). If a config save ever
+  appears not to stick again, verify container-vs-host with
+  `docker exec meridian stat -c %i /app/user-config.json` vs
+  `stat -c %i ~/meridian/user-config.json` (must be EQUAL). See CLAUDE.md § Known issues.
 - **Schema caveats (deployed branch):** `strategy` must be `spot`|`curve`|`bid_ask`
   (no `auto`); model fields must be exact OpenRouter slugs, e.g.
   `minimax/minimax-m2.7`. Newer configs (`strategy:"auto"`, opportunity-poll) need
@@ -307,7 +320,9 @@ should be `302` (redirect into Access).
 | `wallet secret: base58 decode failed` at boot | `WALLET_PRIVATE_KEY` is base64/truncated. Must be base58 (~87-88 chars) or a JSON byte-array. |
 | Login always fails / `server not configured` | `.env` value wrapped in quotes (compose passes them literally), or `MERIDIAN_DASHBOARD_PIN_HASH`/`MERIDIAN_SESSION_SECRET` missing. Strip quotes. |
 | `Failed to load user-config.json: parse` crash-loop | Schema rejected the config (e.g. `strategy:"auto"`). See §6. Restore a backup from `~/meridian-data/user-config.backup.*.json`. |
-| Config edit didn't take effect | Single-file mount inode trap. `up -d --force-recreate meridian`. |
+| Config edit didn't take effect (MANUAL host edit) | Single-file mount inode trap. `up -d --force-recreate meridian`, or edit in place. See §6. |
+| Dashboard/Telegram config save reverts (persisted true → shows false after restart) | Was the bind-mount rename→detached-inode bug; fixed 2026-08-29 (`update_config` writes `{inPlace:true}`). If it recurs, the write is renaming again — check container-vs-host inode are EQUAL (`docker exec meridian stat -c %i /app/user-config.json` vs `stat -c %i ~/meridian/user-config.json`). |
+| CI deploy fails: `docker pull … error from registry: denied` (build/test job SUCCEEDED) | vivobook's `ghcr.io` login expired; on overlayfs docker sends the bad token and the registry answers `denied` instead of anon-pulling. The package is public. Fix on the box: `docker logout ghcr.io`, then re-run the failed job: `gh run rerun <run-id> --failed`. |
 | Cloudflare "That account does not have access" | The login email isn't in the Access policy. Add it, or enable One-time PIN. |
 | Browser shows red "Dangerous" | Chrome Enhanced Safe Browsing false positive on a new domain + login form (not on Google's blocklist — transparency report shows "no available data"). Standard Protection users don't see it. |
 | Deploy didn't recreate the container | `docker compose up` skips recreate on a repointed tag — deploy.sh uses `--force-recreate`. |
@@ -320,7 +335,8 @@ should be `302` (redirect into Access).
 | `mrd_close_position` fails via Sage; Sage says "close via direct bridge fallback" | Plugin `mrd_close_position` schema must declare `reason` as required (Meridian `close_position` tool Zod-rejects without it). Fixed 2026-08-02. Ensure `~/.hermes/profiles/sage/plugins/meridian/tools.py` matches the repo copy at `deploy/hermes-meridian-plugin/tools.py`. |
 | Dashboard summary shows stale "open" positions (much higher than on-chain) | state.json ghost accumulation — position-repo wasn't flipped on close. Fixed 2026-08-02: `markClosedInRepoHook` on `close_position` + reverse reconciler in management cycle. Existing ghosts auto-flip on the next management tick (~10 min). |
 | Sage's terminal can't find `gmgn-cli` (or any tool in `~/.local/bin`) | Sage's HOME resolves to `/opt/data/profiles/sage/home` but `~/.local/bin` isn't on the default PATH. Fix on vivobook: `echo 'export PATH="$HOME/.local/bin:$PATH"' > ~/.hermes/profiles/sage/home/.bashrc` (auto_source_bashrc is on in Sage's config.yaml, so future shells pick it up). |
-| Sage doesn't know how to operate Meridian | The `meridian-ops` skill must be installed at `~/.hermes/profiles/sage/skills/meridian-ops/SKILL.md` (source of truth: `deploy/hermes-meridian-plugin/skill/SKILL.md`). Verify with `ls ~/.hermes/profiles/sage/skills/meridian-ops/`; scp + `s6-svc -r gateway-sage` if missing. Sage's SOUL.md is intentionally untouched — the skill loads on demand when Meridian topics come up. |
+| Sage doesn't know how to operate Meridian | The `meridian-ops` skill must be installed at `~/.hermes/profiles/sage/skills/meridian-ops/SKILL.md` (source of truth: `deploy/hermes-meridian-plugin/skill/SKILL.md`). Verify with `ls ~/.hermes/profiles/sage/skills/meridian-ops/`; scp + `s6-svc -r gateway-sage` if missing. **Pull the live copy DOWN before editing — Sage self-edits it** (see the plugin README's install/update block). SOUL.md carries small Meridian blocks (deploy payload + exit-advisor role, added 2026-08-29) but detailed ops live in the skill. |
+| Sage calls a tool (or rambles) instead of replying `CLOSE:`/`HOLD:` on an exit escalation | Its `meridian-ops` skill/SOUL is stale — the "Autonomous EXIT advising" section (2026-08-29) defines the one-line, no-tool contract. Re-sync SKILL.md + SOUL.md and `s6-svc -r gateway-sage`. The per-request prompt is `EXIT_ADVISOR_PROMPT` in `src/app/management/cycle.ts`; the endpoint is only hit when `sageExitEnabled=true`. |
 
 ---
 

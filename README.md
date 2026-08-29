@@ -27,12 +27,19 @@ rollback (`git checkout legacy-js`).
 
 - **Screens pools** — scans Meteora DLMM pools against configurable thresholds
   (fee/TVL ratio, organic score, holder count, mcap, bin step) and surfaces
-  high-quality opportunities.
+  high-quality opportunities. A **trend-independent drawdown gate** (`maxFromHighPct`,
+  default 35%) rejects candidates deep below their window high even when the last
+  candles bounce green — a dead-cat bounce is not a recovery.
 - **Manages positions** — monitors, claims fees, and closes LP positions
-  autonomously; decides via 5 deterministic close rules, then hands off only
-  non-STAY actions to the LLM.
+  autonomously via deterministic rules (no LLM in the management loop). An optional
+  **smart-exit regime engine** (`smartExitEnabled`) replaces the static stop with a
+  CATASTROPHIC / DYING / HEALTHY / AMBIGUOUS classifier — cutting collapsing positions
+  early, holding healthy in-range fee-earners past the stop, and escalating the
+  genuinely ambiguous ones to Sage for a CLOSE/HOLD verdict. Dark by default; armed
+  from the dashboard Config → Exit rules tab.
 - **Trailing take-profit** — dedicated 30s poller with a 15s two-phase drop
-  confirm before firing a close.
+  confirm before firing a close (plus a catastrophic-floor / out-of-range fast-cut
+  when smart-exit is armed).
 - **Learns from performance** — records structured lessons + closed-trade
   performance to `lessons.json` (each `PerformanceRecord` now carries
   `base_mint`, `entry_technicals`, `exit_technicals`), evolves screening
@@ -49,10 +56,10 @@ rollback (`git checkout legacy-js`).
   sustained-downtrend veto + an extreme-volatility veto against 6 recent SLs
   on 2026-08-10.
 - **Technical analysis** — `mrd_get_pool_kline` returns multi-timeframe OHLCV
-  + 12 computed features (spike detection, at_local_top, ATR%, vol spike,
-  trend, swing-low support proximity + touch count). Screening pre-fetches
-  these inline per candidate; the tool is exposed for interactive analysis
-  and post-mortems in the Sage Telegram group.
+  + 13 computed features (spike detection, at_local_top, ATR%, vol spike,
+  trend, swing-low support proximity + touch count, consecutive red-candle streak).
+  Screening pre-fetches these inline per candidate; the tool is exposed for
+  interactive analysis and post-mortems in the Sage Telegram group.
 - **Telegram REPL** — in production, screening + conversational control is
   delegated to **Sage** (Hermes agent, memory-backed) via the intra-host bridge
   (see `deploy/SAGE-MERIDIAN-ROLLOUT.md`). Meridian keeps outbound cards
@@ -60,10 +67,13 @@ rollback (`git checkout legacy-js`).
   identity; Sage handles all inbound. Standalone Meridian mode still supports its
   own inbound long-poll REPL when `MERIDIAN_TELEGRAM_INBOUND` is unset.
 - **Sage `meridian-ops` skill** — Sage's operational knowledge (mode detection,
-  `mrd_*` tool inventory, playbooks, config-edit protocol, boundaries) lives in
+  `mrd_*` tool inventory, playbooks, config-edit protocol, the exit-advisor
+  CLOSE/HOLD contract, boundaries) lives in
   `deploy/hermes-meridian-plugin/skill/SKILL.md` and installs to Sage as a
-  Hermes skill. `mrd_update_config` is human-gated at the bridge (`cycle_id`
-  present ⇒ 403), so Sage cannot patch config autonomously.
+  Hermes skill. Sage plays two Meridian roles — screening decider and exit
+  advisor — and self-edits this skill, so **pull the live copy before editing**.
+  `mrd_update_config` is human-gated at the bridge (`cycle_id` present ⇒ 403),
+  so Sage cannot patch config autonomously.
 - **Discord signals** — optional Discord listener queues LP Army channel calls
   for screening (retained from legacy — separate subproject).
 

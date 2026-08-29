@@ -40,7 +40,7 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
   one-shot single screening cycle.
 - **Two LLM-driven roles + one deterministic cycle** (tool access enforced by `toolFilter`, not the role):
   - `SCREENER` — every `screeningIntervalMin`, picks a pool, calls `deploy_position`. Delegated to Sage in production (`MERIDIAN_DECIDER=sage`); local loop is fallback.
-  - **Management (deterministic, no LLM)** — every `managementIntervalMin`, `planForPosition` decides, `executeTool` runs it. Rewired from LLM-in-the-loop → direct calls on 2026-08-02.
+  - **Management (deterministic, no LLM)** — every `managementIntervalMin`, `planForPosition` decides, `executeTool` runs it. Rewired from LLM-in-the-loop → direct calls on 2026-08-02. Since 2026-08-29 an optional **smart-exit regime engine** (`smartExitEnabled`) replaces the static stop with CATASTROPHIC/DYING/HEALTHY/AMBIGUOUS classification; the AMBIGUOUS middle is escalated to Sage for a CLOSE/HOLD verdict (advisory — Sage does not execute). See § Smart-exit regime engine.
   - `GENERAL` — ad-hoc chat (dashboard `/chat`). Telegram inbound is now handled by Sage (Hermes), not this role.
 - **State = JSON files** at `STATE_DIR` (default cwd), one repo per file, atomic writes.
   No DB.
@@ -80,7 +80,7 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
           cooldown, deploy-planning, screening              market/* (jupiter, meteora, rugcheck,
    format: decision-strings, enrich-close,                          geckoterminal-kline, + fakes)
            candidate-history, technicals                    persistence/json/* (9 repos, atomic)
-   schemas: 15 Zod shapes    ports/: 27 interfaces          swap, llm(+decorators), notify, scheduler,
+   schemas: 15 Zod shapes    ports/: 28 interfaces          swap, llm(+decorators), notify, scheduler,
                                                             logger, hivemind, dashboard (bridge)
 ```
 
@@ -111,7 +111,11 @@ config + selects adapters + builds `AppContext`; `main()` (L410-606) wires cron/
 **`src/domain/`** — pure logic + Zod schemas, no I/O.
 - `rules/close-rules.ts:39` `getDeterministicCloseRule` — the **5 hard exit rules**
   (stop-loss, take-profit, pumped-above-range, OOR-wait, low-yield); rules 1&2
-  suppressed when PnL is suspect.
+  suppressed when PnL is suspect. Same file, since 2026-08-29: `getExitDecision`
+  (regime classifier — CATASTROPHIC/DYING/HEALTHY/AMBIGUOUS/OK) + `getPollerFastCut`
+  (30s catastrophic + OOR-below fast-cut); `getDeterministicCloseRule` gained a
+  `{skipStopLoss}` opt so rules 2/3/4 still fire while the engine owns the downside stop.
+  See § Smart-exit regime engine.
 - `rules/pnl.ts:17` `assessPnl` — reported vs derived; **divergence is informational
   only, does NOT gate exits** (deliberate — don't re-add gating). `pnl_pct_suspicious`
   fires only when a tick is genuinely unpriceable.
@@ -133,10 +137,11 @@ config + selects adapters + builds `AppContext`; `main()` (L410-606) wires cron/
   `blacklist.ts`, `dev-blocklist.ts`.
 - `format/` — `decision-strings.ts`, `enrich-close.ts`, `candidate-history.ts`
   (per-candidate pool + base_mint history + portfolio aggregate over last N closes),
-  `technicals.ts` (pure OHLCV[] → 12-feature TechnicalsSummary: spike_pct,
+  `technicals.ts` (pure OHLCV[] → 13-feature TechnicalsSummary: spike_pct,
   at_local_top/bottom, atr_pct via Wilder-14, vol_spike, trend via EMA(20)/EMA(50)
   with 1% dead zone, from_window_high_pct, nearest_support via swing-low detection,
-  support_distance_pct, support_touches; + `formatTechnicalsLine` + `formatTechnicalsBlock`).
+  support_distance_pct, support_touches, consecutive_red_count (trailing red candles,
+  added 2026-08-29 for the DYING regime); + `formatTechnicalsLine` + `formatTechnicalsBlock`).
 - `prompt/builder.ts:95` `buildSystemPrompt(ctx)` — pure assembler; `roleInstructions`
   = the 3 role prompts. Includes `── LESSONS ──` (pinned + recent 5), `── PERFORMANCE ──`,
   `── DECISIONS ──` when the caller passes them. `prompt/role-tools.ts` —
@@ -153,7 +158,9 @@ adapters MUST resolve with `[]` on error, never throw). Persistence (all `load()
 `ConfigRepo`, `PositionRepo`, `PoolMemoryRepo`, `DecisionLogRepo`, `LessonRepo`,
 `StrategyRepo`, `SmartWalletRepo`, `TokenBlacklistRepo`, `DevBlocklistRepo`. Also
 `LLMClient`, `SageDecider` (Path 2 screening delegation — agentic, returns prose not
-tool_calls), `Notifier`+`LiveMessageHandle`, `TelegramInbound`, `HiveMindClient`,
+tool_calls), `SageExitAdvisor` (advisory exit — returns `{CLOSE|HOLD, reason}`, throws
+on transport so the caller applies its conditional fallback; added 2026-08-29),
+`Notifier`+`LiveMessageHandle`, `TelegramInbound`, `HiveMindClient`,
 `Clock`, `Scheduler`, `Logger`.
 
 **`src/adapters/`** — implementations.
@@ -187,6 +194,11 @@ tool_calls), `Notifier`+`LiveMessageHandle`, `TelegramInbound`, `HiveMindClient`
   Hermes' api server; sends `X-Hermes-Session-Key` + CF Access headers + an explicit
   `User-Agent` (CF blocks default UAs → 403/1010); throws `SageTransportError` on
   timeout/transport so the screening cycle falls back to the local loop.
+- `llm/sage-exit-advisor-http.ts` — `SageExitAdvisor` impl (2026-08-29). Same Hermes
+  transport pattern (reuses `SageTransportError`, `FetchLike`); sends one position's
+  signal block + an exit-specific system prompt, parses a `CLOSE:`/`HOLD:` line
+  (`parseExitVerdict`). Unparseable/timeout → throws so management applies the
+  conditional fallback. `llm/fake-sage-exit-advisor.ts` is the test double.
 - `notify/` (telegram, telegram-inbound, collecting, null), `scheduler/`
   (interval, manual), `logger/console.ts`, `hivemind/agent-meridian.ts`.
 - `dashboard/` — the control bridge (see § Dashboard bridge).
@@ -299,6 +311,13 @@ The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
    is passed through pure `computeTechnicals` and rendered as a `technicals:` block
    under the candidate line. Sage sees spike / support / trend / ATR / vol_spike
    inline — no `mrd_get_pool_kline` call needed inside the delegation.
+   **TA hard gate** (fail-closed, applied to the technicals-enriched shortlist) rejects
+   on 5 modes: `missing_trend` (all TFs null + `rejectOnMissingTrend`), **`drawdown`
+   (2026-08-29 — worst `from_window_high_pct` < `-maxFromHighPct` (default 35) on ANY
+   TF, TREND-INDEPENDENT)**, `capitulation` (all-DOWN + deep + no-support + dead-vol),
+   `atr_extreme` (> `maxAtrPct`), `spike_top` (> `maxSpikePct` AND `at_local_top`). The
+   drawdown mode was added after Zoe/GTA6/Morty stop-losses: bought −33 to −50% below
+   high on a 1h `trend=UP` dead-cat bounce that the trend-gated capitulation check missed.
 6. **History injection**: `computeCandidateHistory` (per-candidate pool + base_mint
    matches from `recentPerformance`) renders as a `history:` line; the aggregate
    `computePortfolioAggregate` (buckets by strategy / volatility / entry_mcap over
@@ -328,10 +347,20 @@ The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
    closes (pnl-poller direct chain call, Meteora UI, ad-hoc script). Without this,
    `buildStateSummary` reports stale open counts (e.g. dashboard summary showed
    36 records vs 0 on-chain before the fix).
-4. `planForPosition` per position: deterministic close rule → else CLAIM if
-   `unclaimed_fees_usd >= minClaimAmount` → else STAY.
-5. If **all STAY → `{kind:"all_stay"}`**.
-6. Else iterate non-STAY actions sequentially, invoke `close_position` /
+4. **OHLCV enrichment** (`enrichPositionTechnicals`, 2026-08-29, fail-open like
+   screening's) — fetch 15m+1h per open position so the regime engine has structure.
+5. `planForPosition` per position: `smartExitEnabled=false` → legacy path (static
+   `getDeterministicCloseRule`, rule 1 = static stop). `smartExitEnabled=true` →
+   rules 2/3/4 via `{skipStopLoss}` + **`getExitDecision`** owns the downside stop.
+   The classified regime is logged EVERY tick (shadow) even when disabled, for a
+   pre-arming review window. Then CLAIM if `unclaimed_fees_usd >= minClaimAmount` → STAY.
+6. **AMBIGUOUS escalation** (smart mode) — a position the engine can't resolve is sent
+   to `resolveEscalation`: per-position cooldown (`sageExitCooldownMin`) → if
+   `sageExitEnabled` + advisor present, `SageExitAdvisor.decide` → CLOSE/STAY; on
+   transport error/timeout OR `sageExitEnabled=false`, conditional fallback (in-range →
+   HOLD, OOR → CLOSE). Sage advises; management executes.
+7. If **all STAY → `{kind:"all_stay"}`**.
+8. Else iterate non-STAY actions sequentially, invoke `close_position` /
    `claim_fees` **directly via `executeTool`** (safety gates + post-hooks + notify
    card + decision log + auto-swap still fire). Returns `{kind:"executed", results}`.
    No LLM: zero token cost, no latency, no once-per-session cap on closes-per-tick
@@ -344,6 +373,12 @@ The scheduler skips overlapping ticks per label (the `_busy` guard is built in).
 - ~15s later: re-check; fire `close_confirmed` only if the drop still holds within
   1% tolerance. **`peak_pnl_pct` is merged from the position repo** before the pure
   tick — forget it and trailing-TP silently never triggers.
+- **Smart-exit fast-cut** (2026-08-29, gated on `smartExitEnabled`): each tick also
+  runs `getPollerFastCut` (on-chain only, no OHLCV) — CATASTROPHIC floor
+  (`pnl ≤ exitHardFloorPct`) + OOR-below proxy (`active_bin < lower_bin` AND
+  `pnl ≤ exitOorProxyPct`). Fires an immediate `fast_cut` action (no two-phase confirm);
+  the position is skipped by the trailing scan that tick. Dark-launch default off = poller
+  behaves exactly as before.
 
 ---
 
@@ -360,13 +395,39 @@ Rules 1 & 2 are suppressed when PnL is suspect (`isPnlSuspect`); range rules (3-
 fire regardless. On close, `post/log-decision` records it and `post/notify` sends the
 Telegram card. Cooldowns live in `pool-memory` + `rules/cooldown.ts`.
 
+### Smart-exit regime engine (`smartExitEnabled`, 2026-08-29)
+
+Design doc: [`deploy/SPEC-2026-08-29-smart-exit-regime-engine.md`](deploy/SPEC-2026-08-29-smart-exit-regime-engine.md).
+When `smartExitEnabled=true`, `getExitDecision` (`close-rules.ts`) replaces the **static
+rule-1 stop** with a regime classifier (rules 2/3/4 + trailing-TP unchanged, called with
+`{skipStopLoss:true}`). Priority order per position:
+
+1. **CATASTROPHIC** — `pnl ≤ exitHardFloorPct` (−25) → CLOSE, unconditional backstop.
+2. **DYING** (cut early, at ANY pnl) — OOR-below AND (support broken OR both-TF DOWN OR
+   `atr_pct < dyingAtrCollapsePct`), OR `consecutive_red_count ≥ dyingConsecutiveRed` AND
+   fee velocity < `minFeePerTvl24h` → CLOSE.
+3. attention gate — `pnl > stopLossPct` and not DYING → HOLD (regime OK). `stopLossPct`
+   is reused as the "worth-a-decision" threshold; DYING is checked BEFORE it so a
+   collapsing position is cut before it reaches the stop.
+4. **HEALTHY** — in-range AND `fee_per_tvl_24h ≥ healthyFeeVelocityMin` AND not both-TF
+   DOWN → HOLD past the stop (let fees work; the user's "don't stop out a working position").
+5. **AMBIGUOUS** — everything else → ESCALATE (management asks Sage; see cycle step 6).
+
+Suspect/null pnl → HOLD (defer to range rules). Two cadences: the 30s poller runs the
+cheap `getPollerFastCut` subset (CATASTROPHIC + OOR proxy, no OHLCV); the 10-min
+management cycle runs the full classifier with fresh OHLCV. **Dark-launch: default off**
+— when off, exit behavior is byte-identical to the legacy static stop, but the regime is
+still classified + logged (shadow) for a review window. Arm via dashboard Config (Exit
+rules tab): `smartExitEnabled` first, `sageExitEnabled` second. Config field `stopLossPct`
+becomes the *attention* threshold (not a hard close) in smart mode.
+
 ---
 
 ## Persistent files (JSON at `STATE_DIR`, atomic writes)
 
 | File | Repo | Owns |
 |---|---|---|
-| `state.json` | position-repo | tracked positions (+`entry_technicals` since 2026-08-10) + recent-events ring (capped 20) |
+| `state.json` | position-repo | tracked positions (+`entry_technicals` since 2026-08-10, +`last_sage_exit_escalation_at` since 2026-08-29) + recent-events ring (capped 20) |
 | `pool-memory.json` | pool-memory-repo | per-pool deploy history, win rates, cooldowns |
 | `lessons.json` | lesson-repo | lessons + performance records (PerformanceRecord now carries `base_mint`, `entry_technicals`, `exit_technicals`) |
 | `decision-log.json` | decision-log | rolling 100 decisions (deploy/close/skip/no_deploy/note) |
@@ -376,9 +437,12 @@ Telegram card. Cooldowns live in `pool-memory` + `rules/cooldown.ts`.
 | `dev-blocklist.json` | dev-blocklist-repo | deployer wallet → reason |
 | `user-config.json` | config-repo | the live config (loaded → nested `AppConfig`) |
 
-All writes are temp-file + fsync + atomic rename. Config redaction (`*key/token/secret*`)
-happens when a file is served over the bridge. In production these live on the
-`/opt/data` volume (`MERIDIAN_STATE_DIR=/opt/data`) — see `deploy/OPERATIONS.md`.
+All writes are temp-file + fsync + atomic rename **except `user-config.json`**, which is
+written with `writeJsonAtomic(..., {inPlace:true})` — it is a single-file Docker bind
+mount and rename detaches its inode (see § Known issues). Config redaction
+(`*key/token/secret*`) happens when a file is served over the bridge. In production the
+state files live on the `/opt/data` volume (`MERIDIAN_STATE_DIR=/opt/data`); the config is
+a separate host bind mount at `/app/user-config.json` — see `deploy/OPERATIONS.md`.
 
 ---
 
@@ -395,7 +459,15 @@ happens when a file is served over the bridge. In production these live on the
 - `bins*` fields hard-floor at `MIN_SAFE_BINS_BELOW` (35). `pnl.source` = `rpc|meteora`
   (default rpc, `pnlRpcUrl` default `https://pump.helius-rpc.com`).
 - `update_config` writes back via `nestedToFlat` merged with the original flat
-  (its doc comment is stale — trust the code).
+  (its doc comment is stale — trust the code), using `writeJsonAtomic {inPlace:true}`
+  (bind-mount safe — see § Known issues).
+- **Smart-exit keys** (`management`, added 2026-08-29): `smartExitEnabled` (false),
+  `exitHardFloorPct` (−25), `exitOorProxyPct` (−12), `dyingConsecutiveRed` (4),
+  `dyingAtrCollapsePct` (10), `healthyFeeVelocityMin` (12), `sageExitEnabled` (false),
+  `sageExitCooldownMin` (20). **Entry key** (`screening`): `maxFromHighPct` (35).
+  All have flat-schema defaults, so a live config missing them gets the defaults at boot
+  (no manual edit). Any NEW field on a persisted schema MUST be `.optional()`/`.default()`
+  or old `state.json`/`lessons.json` fail to load — see § Known issues.
 
 ---
 
@@ -417,6 +489,7 @@ happens when a file is served over the bridge. In production these live on the
 | `MERIDIAN_TELEGRAM_INBOUND` | **must be `false` in production** — two processes polling the shared token = `getUpdates` 409. Set as compose default. |
 | **`MERIDIAN_DECIDER`** | `sage` → screening delegates the deploy decision to Sage (Path 2); anything else / unset = local LLM loop. **Compose default is `sage` since 2026-08-02.** |
 | `SAGE_BASE_URL` / `SAGE_API_KEY` / `SAGE_SESSION_KEY` / `SAGE_TIMEOUT_MS` | Sage endpoint (Hermes api), memory-scope header, delegation timeout (default 90s). Only read when `MERIDIAN_DECIDER=sage`. On vivobook production the URL is intra-host: `http://host.docker.internal:8643` (see `docker-compose.yml` `extra_hosts`). |
+| `SAGE_EXIT_TIMEOUT_MS` | `SageExitAdvisor` request timeout (default 30000). The exit advisor reuses `SAGE_BASE_URL`/`SAGE_API_KEY`/`SAGE_SESSION_KEY`; the advisor is created whenever those are set, but only consulted when `sageExitEnabled=true`. |
 | `SAGE_CF_ACCESS_CLIENT_ID` / `SAGE_CF_ACCESS_CLIENT_SECRET` | **Historical** — CF Access service-token headers used when Sage was fronted by Cloudflare Access (pre-2026-08-01 Tencent era). Intra-host path drops them; the code still reads them if set. |
 | `SOL_PRICE_USD` | static-price fallback (default 150). |
 | `DRY_RUN` | **surfaced only as a HiveMind capability flag — NOT a gating var in the TS code.** |
@@ -510,6 +583,22 @@ retired; env backups on the host at `~/meridian/.env.bak-sagebot-*`. See
   produces a `no_deploy` decision; zero surviving technicals still ships to the decider
   with an empty `technicals:` line. Sage's veto rules see empty as "unknown" — this is
   intentional (fail-open) but does mean a persistent GT outage hides the vetoes.
+- **Config writes must NOT use rename — bind-mount inode detach (fixed 2026-08-29).**
+  `user-config.json` is a single-file Docker bind mount. `writeJsonAtomic`'s temp+rename
+  does NOT reliably EBUSY on overlayfs — `rename` SUCCEEDS by creating a NEW inode in the
+  container's upper layer, silently detaching `/app/user-config.json` from the host file.
+  Symptom: dashboard config saves apply in-memory (look saved) but the host file never
+  changes → every restart reverts, and `meridian-web` (reads the host mount) shows stale.
+  Fix: `writeJsonAtomic(path, data, {inPlace:true})` overwrites the existing inode via
+  `copyFile` (O_TRUNC). `update_config` uses it. Regression test:
+  `tests/unit/atomic-write.test.ts`. **Only single-file mounts need this** — dir-mounted
+  state files (`/opt/data/*.json`) keep temp+rename (safer; rename stays within the dir).
+- **New persisted-schema fields MUST be `.optional()` or `.default()`.** A REQUIRED new
+  field breaks loading of pre-existing records (`.passthrough()` tolerates extra keys, not
+  missing ones). Broke prod 2026-08-29: `consecutive_red_count` added as required →
+  `state.json`/`lessons.json` `entry_technicals` (written earlier) failed with 266 Schema
+  mismatch issues. Fixed with `.default(null)`. Watch: `schemas/kline.ts`,
+  `schemas/position.ts`, `schemas/lesson.ts`, `schemas/config*.ts`.
 
 ---
 
@@ -519,6 +608,12 @@ retired; env backups on the host at `~/meridian/.env.bak-sagebot-*`. See
   `chain/meteora/client.ts` `getMyPositions`. `force:true` is what safety gates rely on.
 - **New persistent store** → copy a repo from `persistence/json/` (factory over a file
   path, `writeJsonAtomic`, Zod-validated read, `Result` return). Cap any growing array.
+  New schema fields → `.optional()`/`.default()` (back-compat). Writing a single-file
+  bind mount → `writeJsonAtomic {inPlace:true}`.
+- **New Sage delegation** (screening decider vs exit advisor) → copy the transport from
+  `adapters/llm/sage-decider-http.ts` / `sage-exit-advisor-http.ts` (CF/UA headers,
+  `SageTransportError`, injectable `FetchLike`) + a fake double; wire it in `daemon.ts`
+  gated on `SAGE_BASE_URL`+`SAGE_API_KEY`, only USED behind a config flag.
 - **New tool** → `defineTool` with Zod args/result + safety gates + post hooks; never
   throw, return `ToolError`.
 - **New scheduled work** → `scheduler.every(ms, job, label)` (overlap-skip is built in);
@@ -532,6 +627,14 @@ retired; env backups on the host at `~/meridian/.env.bak-sagebot-*`. See
 
 - Add a tool → `src/app/tools/impls/`, `tools/registry.ts`, `domain/prompt/role-tools.ts`.
 - Change safety/exit rules → `src/domain/rules/close-rules.ts` + `tools/safety/*`.
+- Change the smart-exit engine → `src/domain/rules/close-rules.ts` (`getExitDecision` /
+  `getPollerFastCut`) + `src/app/management/cycle.ts` (`resolveEscalation`) + `pnl-poller.ts`;
+  design in [`deploy/SPEC-2026-08-29-smart-exit-regime-engine.md`](deploy/SPEC-2026-08-29-smart-exit-regime-engine.md).
+- Change what Sage knows (screening OR exit-advisor prompts/behavior) →
+  `deploy/hermes-meridian-plugin/skill/SKILL.md` (**pull the live copy from vivobook
+  FIRST — Sage self-edits it**; deploy steps in that plugin's README) + Sage's SOUL.md on
+  the box. The per-request exit prompt Meridian sends is `EXIT_ADVISOR_PROMPT` in
+  `src/app/management/cycle.ts`.
 - Change the LLM contract → `src/app/agent/loop.ts` + `domain/prompt/builder.ts`.
 - Change deploy/close on-chain behavior → `src/adapters/chain/meteora/write-paths.ts` +
   `client.ts` (post-tool side-effects are in `tools/post/*`).
