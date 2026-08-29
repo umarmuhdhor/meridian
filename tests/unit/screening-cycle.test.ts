@@ -12,6 +12,8 @@ import { assertPoolDeployableTool } from "../../src/app/tools/impls/assert-pool-
 import { deployPositionTool } from "../../src/app/tools/impls/deploy-position.js";
 import type { CandidatePool } from "../../src/domain/schemas/market.js";
 import type { OnChainPosition } from "../../src/domain/schemas/chain.js";
+import type { KlineCandle } from "../../src/domain/schemas/kline.js";
+import { createFakeKlineClient } from "../../src/adapters/market/fake-kline.js";
 import { makeCtx } from "./tool-context.js";
 
 function pool(over: Partial<CandidatePool> = {}): CandidatePool {
@@ -46,6 +48,22 @@ const REGISTRY = createRegistry([
 ]);
 
 const CLOCK = fixedClock("2026-07-05T12:00:00.000Z");
+
+/**
+ * 20 declining candles: window high = 100, last close = `endClose`, so
+ * from_window_high_pct = (endClose - 100) / 100 * 100. endClose=50 → -50%.
+ * Only 20 candles (< emaLong 50) so trend is null — proving the drawdown gate
+ * is trend-INDEPENDENT (the Zoe/GTA6/Morty dead-cat-bounce hole).
+ */
+function fallingSeries(endClose: number, startHigh = 100): KlineCandle[] {
+  const out: KlineCandle[] = [];
+  const step = (startHigh - endClose) / 19;
+  for (let i = 0; i < 20; i++) {
+    const c = startHigh - i * step;
+    out.push({ t: 1_700_000_000 + i * 3600, o: c, h: i === 0 ? startHigh : c, l: c, c, v: 1000 });
+  }
+  return out;
+}
 
 describe("runScreeningCycle", () => {
   it("skips at max positions with decision log entry", async () => {
@@ -95,6 +113,27 @@ describe("runScreeningCycle", () => {
     }
     const ds = await ctx.repos.decisions.recent(1);
     expect(ds[0]?.type).toBe("no_deploy");
+  });
+
+  it("rejects a candidate deep below its window high regardless of trend (drawdown gate)", async () => {
+    // Zoe/GTA6/Morty repro: token -50% from window high, bought on a bounce.
+    // Trend is null here (only 20 candles), proving the gate does NOT depend on
+    // trend=DOWN — the exact hole that let the dead-cat-bounce entries through.
+    const pools = createFakePoolDiscovery({
+      seed: [pool({ pool_address: "deepPool", name: "DEEP/SOL", base_mint: "MINT_D" })],
+    });
+    const kline = createFakeKlineClient();
+    kline.set("deepPool", "15m", fallingSeries(50));
+    kline.set("deepPool", "1h", fallingSeries(50));
+    const chain = createDryRunChainClient({ clock: CLOCK, seed: { walletSol: 5 } });
+    const ctx = makeCtx({ chain, market: { pools, kline } });
+    const llm = createFakeLLM({ script: [] });
+    const outcome = await runScreeningCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    expect(outcome.kind).toBe("no_deploy");
+    if (outcome.kind === "no_deploy") {
+      expect(outcome.picked).toBe(0);
+      expect(outcome.rejection_summary).toContain("ta_drawdown");
+    }
   });
 
   it("invokes agent when candidates pass", async () => {

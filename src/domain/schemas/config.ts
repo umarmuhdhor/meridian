@@ -30,6 +30,15 @@ export const ManagementConfigSchema = z.object({
   repeatDeployCooldownEnabled: z.boolean().default(true),
   repeatDeployCooldownHours: z.number().nonnegative().default(12),
   repeatDeployCooldownScope: z.enum(["pool", "token"]).default("token"),
+  // Smart-exit regime engine — see config-flat.ts for semantics. Dark-launched.
+  smartExitEnabled: z.boolean().default(false),
+  exitHardFloorPct: z.number().default(-25),
+  exitOorProxyPct: z.number().default(-12),
+  dyingConsecutiveRed: z.number().int().min(1).default(4),
+  dyingAtrCollapsePct: z.number().min(0).default(10),
+  healthyFeeVelocityMin: z.number().nonnegative().default(12),
+  sageExitEnabled: z.boolean().default(false),
+  sageExitCooldownMin: z.number().int().min(1).default(20),
 });
 export type ManagementConfig = z.infer<typeof ManagementConfigSchema>;
 
@@ -76,6 +85,7 @@ export const ScreeningConfigSchema = z.object({
   capitulationFromHighPct: z.number().min(0),
   capitulationSupportDistPct: z.number().min(0),
   capitulationAtrPct: z.number().min(0),
+  maxFromHighPct: z.number().min(0),
   technicalsWindowShort: z.number().int().min(3),
   allowedLaunchpads: z.array(z.string()),
   blockedLaunchpads: z.array(z.string()),

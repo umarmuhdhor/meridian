@@ -25,6 +25,15 @@ export const mgmt: ManagementConfig = {
   dustSweepIntervalMin: 5,
   dustSweepMinUsd: 0.01,
   dustSweepSlippageBps: 500,
+  // Smart-exit engine (defaults; individual tests override via spread).
+  smartExitEnabled: false,
+  exitHardFloorPct: -25,
+  exitOorProxyPct: -12,
+  dyingConsecutiveRed: 4,
+  dyingAtrCollapsePct: 10,
+  healthyFeeVelocityMin: 12,
+  sageExitEnabled: false,
+  sageExitCooldownMin: 20,
 };
 
 // Threshold values here mirror the former inline `defaultThresholds` constants so
@@ -47,6 +56,15 @@ export const screening: ScreeningConfig = {
   category: "",
   maxBotHoldersPct: 30,
   maxTop10Pct: 60,
+  // TA gate — lenient caps so only the signal under test trips in unit tests.
+  maxAtrPct: 100,
+  maxSpikePct: 1000,
+  rejectOnMissingTrend: false,
+  capitulationFromHighPct: 65,
+  capitulationSupportDistPct: 15,
+  capitulationAtrPct: 15,
+  maxFromHighPct: 35,
+  technicalsWindowShort: 20,
   allowedLaunchpads: [],
   blockedLaunchpads: [],
   minTokenAgeHours: null,

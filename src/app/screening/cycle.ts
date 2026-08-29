@@ -444,17 +444,20 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
   // resolved in time; missing timeframes just render fewer lines.
   let technicals = await enrichTechnicals(pickedFiltered, ctx);
 
-  // TA hard gate — four failure modes, ALL fail-closed:
-  //   1. downtrend      → every non-null trend reports EMA DOWN
-  //   2. missing_trend  → every timeframe returned null (too new / wild candles)
-  //   3. atr_extreme    → any timeframe atr_pct > maxAtrPct (deploying into insane vol)
-  //   4. spike_top      → any timeframe spike_pct > maxSpikePct AND at_local_top
+  // TA hard gate — five failure modes, ALL fail-closed:
+  //   1. missing_trend  → every timeframe returned null (too new / wild candles)
+  //   2. drawdown       → worst from_window_high_pct < -maxFromHighPct on ANY tf,
+  //                       TREND-INDEPENDENT (a bounce reading trend=UP is NOT a recovery)
+  //   3. capitulation   → every non-null trend DOWN AND deep + no-support + dead-vol
+  //   4. atr_extreme    → any timeframe atr_pct > maxAtrPct (deploying into insane vol)
+  //   5. spike_top      → any timeframe spike_pct > maxSpikePct AND at_local_top
   //                       (buying the exact top of a pump)
   // 2026-08-11: daemon redeployed a -8.29% loser 1h after close (fixed by cooldown +
   // downtrend gate). 2026-08-13: K-HOME (280x pump, 43% ATR, +57% spike, all trends
   // null) sailed through the downtrend-only gate's fail-open path. This is the fix.
   const maxAtr = ctx.config.screening.maxAtrPct;
   const maxSpike = ctx.config.screening.maxSpikePct;
+  const maxFromHigh = ctx.config.screening.maxFromHighPct;
   const rejectMissingTrend = ctx.config.screening.rejectOnMissingTrend;
   const capFromHigh = ctx.config.screening.capitulationFromHighPct;
   const capSupportDist = ctx.config.screening.capitulationSupportDistPct;
@@ -467,6 +470,26 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
     const trends = rows.map((r) => r.trend).filter((t): t is "UP" | "DOWN" | "FLAT" => t != null);
     if (trends.length === 0 && rejectMissingTrend) {
       taRejected.push({ name, kind: "missing_trend", detail: "all timeframes returned null" });
+      continue;
+    }
+    // Standalone drawdown veto — TREND-INDEPENDENT. A token deep below its window
+    // high is in a downtrend even when the last few candles bounce (trend=UP). The
+    // capitulation gate below only fires when EVERY timeframe reads DOWN, so a
+    // dead-cat bounce (Zoe -50% / GTA6 -41% / Morty -33% from high, all 1h trend=UP)
+    // sailed straight through it. This gate uses the WORST (most negative) from_high
+    // across timeframes and rejects regardless of trend. Fail-open only when
+    // from_high is genuinely null everywhere (too few candles — already caught by
+    // the missing_trend gate when rejectOnMissingTrend is on).
+    const fromHighs = rows
+      .map((r) => r.from_window_high_pct)
+      .filter((v): v is number => v != null);
+    const worstFromHigh = fromHighs.length ? Math.min(...fromHighs) : null;
+    if (worstFromHigh != null && worstFromHigh < -maxFromHigh) {
+      taRejected.push({
+        name,
+        kind: "drawdown",
+        detail: `from_high=${worstFromHigh.toFixed(1)}% below -${maxFromHigh}% (deep drawdown; bounce ≠ recovery)`,
+      });
       continue;
     }
     if (trends.length > 0 && trends.every((t) => t === "DOWN")) {
@@ -683,8 +706,13 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
       "bin range; a downtrend near support with high ATR is a reversal / bin-sweep setup, EXACTLY",
       "what you want. Only veto capitulation: 1h DOWN + from_window_high_pct < -40% + support_distance",
       "> 10% + atr_pct < 15% (deep drop, no bounce, dead vol — nothing to farm even if it reverses).",
-      "The code TA gate already fail-closes on capitulation; your job is to distinguish shallow-dip /",
-      "near-support / high-vol downtrends (deploy, often bid_ask with reversal thesis) from slow bleed.",
+      `HARD DRAWDOWN VETO — the code TA gate REJECTS any candidate whose from_window_high_pct is below`,
+      `-${ctx.config.screening.maxFromHighPct}% on ANY timeframe, REGARDLESS of trend. A 1h trend=UP on a token`,
+      "that is -40% or -50% below its window high is a DEAD-CAT BOUNCE, not a recovery — do NOT read it",
+      "as an uptrend and do NOT try to justify deploying into it. Such candidates never reach you; if you",
+      "see one in the block, decline it. The code TA gate also fail-closes on capitulation; your job is to",
+      "distinguish shallow-dip / near-support / high-vol downtrends (deploy, often bid_ask with reversal",
+      "thesis) from slow bleed.",
       "Before calling mrd_deploy_position you MUST state, in one sentence, why the chosen",
       "strategy fits the candidate's volatility (e.g. \"volatility 5.2, meme → spot\").",
       "A cycle that deploys bid_ask without a declared directional thesis in your rationale is",

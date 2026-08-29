@@ -48,6 +48,27 @@ export const FlatUserConfigSchema = z
     repeatDeployCooldownHours: z.number().nonnegative().default(12),
     repeatDeployCooldownScope: z.enum(["pool", "token"]).default("token"),
 
+    // ── Smart-exit regime engine (deploy/SPEC-2026-08-29-smart-exit-regime-engine.md)
+    // Replaces the static rule-1 stop with a regime classifier. DARK-LAUNCHED:
+    // smartExitEnabled=false → exit behavior is exactly the legacy static stop, and
+    // the regime is still classified + logged (shadow) for observability before arming.
+    smartExitEnabled: z.boolean().default(false),
+    // CATASTROPHIC floor — unconditional close (management + poller). Backstop.
+    exitHardFloorPct: z.number().default(-25),
+    // Poller (30s) fast-cut proxy: OOR-below AND pnl below this → close without OHLCV.
+    exitOorProxyPct: z.number().default(-12),
+    // DYING: N trailing red candles (c<o) + near-zero fee velocity → close.
+    dyingConsecutiveRed: z.number().int().min(1).default(4),
+    // DYING: 1h ATR% below this = dead vol (nothing to farm even on a reversal).
+    dyingAtrCollapsePct: z.number().min(0).default(10),
+    // HEALTHY: hold in-range positions past paper loss only when fee_per_tvl_24h ≥ this.
+    healthyFeeVelocityMin: z.number().nonnegative().default(12),
+    // Consult Sage on AMBIGUOUS positions. When false, AMBIGUOUS uses the conditional
+    // deterministic fallback (in-range→HOLD, OOR/deep→CLOSE).
+    sageExitEnabled: z.boolean().default(false),
+    // A position escalates to Sage at most once per this many minutes.
+    sageExitCooldownMin: z.number().int().min(1).default(20),
+
     // strategy — Sage picks per candidate (see screening/cycle.ts). `strategy` here
     // is only the fallback for legacy positions / Telegram REPL, and the label the
     // dashboard shows as the "AI default".
@@ -88,6 +109,12 @@ export const FlatUserConfigSchema = z
     capitulationFromHighPct: z.number().min(0).default(40),
     capitulationSupportDistPct: z.number().min(0).default(10),
     capitulationAtrPct: z.number().min(0).default(15),
+    // Standalone drawdown veto — TREND-INDEPENDENT. Rejects any candidate whose
+    // close is more than `maxFromHighPct`% below its window high on ANY timeframe,
+    // regardless of a bounce reading trend=UP. Added 2026-08-29 after Zoe/GTA6/Morty
+    // (entries at -50/-41/-33% from high on a 1h dead-cat bounce) all stop-lossed:
+    // the capitulation gate never fired because it was gated behind trend===DOWN.
+    maxFromHighPct: z.number().min(0).default(35),
     // Technicals lookback (candles per timeframe). Controls spike_pct, at_local_top/bottom,
     // from_window_high_pct, vol_spike. Adaptive: for tokens younger than windowShort candles,
     // shrinks to min(windowShort, candles.length). Floor = `minTokenAgeHours` (or 3 if null).
