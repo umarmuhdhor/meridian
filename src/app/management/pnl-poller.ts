@@ -8,6 +8,7 @@ import type { PositionRepo } from "../../ports/position-repo.js";
 import type { ManagementConfig } from "../../domain/schemas/config.js";
 import type { OnChainPosition, PositionsSnapshot } from "../../domain/schemas/chain.js";
 import { assessPnl } from "../../domain/rules/pnl.js";
+import { getPollerFastCut } from "../../domain/rules/close-rules.js";
 import { consolidateBaseToSol } from "./consolidate.js";
 import { enrichCloseResult } from "../../domain/format/enrich-close.js";
 
@@ -44,18 +45,43 @@ export function tickPnlPoller(
   now: Date,
   mgmt: ManagementConfig,
   cfg: { confirmDelayMs: number; confirmTolerancePct: number },
-): { next: PendingConfirm[]; actions: Array<{ kind: "close_confirmed"; positionAddress: string; reason: string }> } {
+): { next: PendingConfirm[]; actions: Array<{ kind: "close_confirmed" | "fast_cut"; positionAddress: string; reason: string }> } {
   const nowMs = now.getTime();
-  const actions: Array<{ kind: "close_confirmed"; positionAddress: string; reason: string }> = [];
+  const actions: Array<{ kind: "close_confirmed" | "fast_cut"; positionAddress: string; reason: string }> = [];
 
   // Fast lookup live → snapshot.
   const bySnap = new Map<string, OnChainPosition>();
   for (const p of snapshot.positions) bySnap.set(p.position, p);
 
+  // Smart-exit fast-cut (on-chain only, no OHLCV): CATASTROPHIC floor + OOR-below
+  // proxy. Immediate (no two-phase confirm — these states are unambiguous). Gated
+  // on smartExitEnabled so the dark-launch default leaves poller behavior unchanged.
+  // Positions cut here are skipped by the trailing-TP scan below.
+  const fastCutAddrs = new Set<string>();
+  if (mgmt.smartExitEnabled) {
+    for (const p of snapshot.positions) {
+      const reason = getPollerFastCut(
+        {
+          pnl_pct: p.pnl_pct,
+          pnl_pct_suspicious: p.pnl_pct_suspicious,
+          total_value_usd: p.total_value_usd ?? null,
+          active_bin: p.active_bin,
+          lower_bin: p.lower_bin,
+        },
+        mgmt,
+      );
+      if (reason) {
+        actions.push({ kind: "fast_cut", positionAddress: p.position, reason });
+        fastCutAddrs.add(p.position);
+      }
+    }
+  }
+
   // 1) Resolve pending confirms that have aged past confirmDelayMs.
   const stillPending: PendingConfirm[] = [];
   const consumedThisTick = new Set<string>();
   for (const q of pending) {
+    if (fastCutAddrs.has(q.positionAddress)) continue; // fast-cut supersedes a queued trailing confirm
     if (nowMs - q.queuedAtMs < cfg.confirmDelayMs) {
       stillPending.push(q);
       continue;
@@ -82,6 +108,7 @@ export function tickPnlPoller(
   if (mgmt.trailingTakeProfit) {
     const pendingKeys = new Set(stillPending.map((p) => p.positionAddress));
     for (const p of snapshot.positions) {
+      if (fastCutAddrs.has(p.position)) continue; // being fast-cut this tick
       if (pendingKeys.has(p.position)) continue; // already queued
       if (consumedThisTick.has(p.position)) continue; // already resolved this tick
       // The peak comes from the tracked position — the live snapshot doesn't carry it.
@@ -179,7 +206,8 @@ export function createPnlPoller(deps: PnlPollerDeps): PnlPollerHandle {
 
       for (const a of actions) {
         try {
-          deps.logger.warn("pnl-poller", `trailing-TP confirmed close for ${a.positionAddress.slice(0, 8)}…`, {
+          const label = a.kind === "fast_cut" ? "smart-exit fast-cut" : "trailing-TP confirmed close";
+          deps.logger.warn("pnl-poller", `${label} for ${a.positionAddress.slice(0, 8)}…`, {
             reason: a.reason,
           });
           const preClose = withPeak.positions.find((p) => p.position === a.positionAddress);

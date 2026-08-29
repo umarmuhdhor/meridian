@@ -44,5 +44,7 @@ export const TechnicalsSummarySchema = z.object({
   support_distance_pct: z.number().nullable(),
   /** How many prior swing lows sit within `touchTolPct` of nearest_support (≥2 = tested). */
   support_touches: z.number().int().nonnegative().nullable(),
+  /** Count of TRAILING red candles (close < open), counting back from the last candle. 0 = last candle green. */
+  consecutive_red_count: z.number().int().nonnegative().nullable(),
 }).passthrough();
 export type TechnicalsSummary = z.infer<typeof TechnicalsSummarySchema>;

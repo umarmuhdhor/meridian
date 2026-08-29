@@ -108,3 +108,20 @@ describe("formatTechnicalsLine", () => {
     expect(line).toContain("price=");
   });
 });
+
+describe("computeTechnicals — consecutive_red_count", () => {
+  const c = (o: number, close: number): KlineCandle => ({ t: 0, o, h: Math.max(o, close), l: Math.min(o, close), c: close, v: 100 });
+  it("counts trailing red candles (close < open), back from the last", () => {
+    // green, green, red, red, red  → streak 3
+    const candles = [c(1, 2), c(2, 3), c(3, 2), c(2, 1.5), c(1.5, 1)];
+    expect(computeTechnicals(candles, "15m").consecutive_red_count).toBe(3);
+  });
+  it("is 0 when the last candle is green", () => {
+    const candles = [c(3, 2), c(2, 1), c(1, 2)];
+    expect(computeTechnicals(candles, "15m").consecutive_red_count).toBe(0);
+  });
+  it("counts all when every candle is red", () => {
+    const candles = [c(3, 2), c(2, 1), c(1, 0.5)];
+    expect(computeTechnicals(candles, "15m").consecutive_red_count).toBe(3);
+  });
+});

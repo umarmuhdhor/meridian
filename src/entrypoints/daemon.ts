@@ -26,6 +26,8 @@ import type { SwapClient } from "../ports/swap-client.js";
 import { createOpenRouterLLMClient } from "../adapters/llm/openrouter.js";
 import { createFakeLLM } from "../adapters/llm/fake.js";
 import { createSageDeciderHttp } from "../adapters/llm/sage-decider-http.js";
+import { createSageExitAdvisorHttp } from "../adapters/llm/sage-exit-advisor-http.js";
+import type { SageExitAdvisor } from "../ports/sage-exit-advisor.js";
 import type { SageDecider } from "../ports/sage-decider.js";
 import { createCollectingNotifier } from "../adapters/notify/collecting-notifier.js";
 import { createTelegramNotifier } from "../adapters/notify/telegram.js";
@@ -497,6 +499,38 @@ async function main(): Promise<void> {
     : {};
   if (sageDecider) console.log(`  decider: SAGE (${process.env.SAGE_BASE_URL}) — local loop fallback armed`);
 
+  // Sage EXIT advisor — same Hermes endpoint, advisory (returns CLOSE/HOLD, no
+  // writes). Created whenever Sage env is present; only consulted when
+  // management.sageExitEnabled=true (dark by default). Escalations for AMBIGUOUS
+  // exits go here; on transport failure the management cycle applies its
+  // conditional deterministic fallback.
+  const sageExitAdvisor: SageExitAdvisor | undefined =
+    process.env.SAGE_BASE_URL && process.env.SAGE_API_KEY
+      ? createSageExitAdvisorHttp({
+          baseUrl: process.env.SAGE_BASE_URL,
+          apiKey: process.env.SAGE_API_KEY,
+          ...(process.env.SAGE_MODEL ? { model: process.env.SAGE_MODEL } : {}),
+          ...(process.env.SAGE_CF_ACCESS_CLIENT_ID && process.env.SAGE_CF_ACCESS_CLIENT_SECRET
+            ? {
+                cfAccessClientId: process.env.SAGE_CF_ACCESS_CLIENT_ID,
+                cfAccessClientSecret: process.env.SAGE_CF_ACCESS_CLIENT_SECRET,
+              }
+            : {}),
+        })
+      : undefined;
+  const managementExtra = sageExitAdvisor
+    ? {
+        sageExit: sageExitAdvisor,
+        sageSessionKey: process.env.SAGE_SESSION_KEY ?? "meridian-trading",
+        sageTimeoutMs: Number(process.env.SAGE_EXIT_TIMEOUT_MS ?? 30_000),
+      }
+    : {};
+  if (ctx.config.management.smartExitEnabled) {
+    console.log(
+      `  smart-exit: ENABLED (floor ${ctx.config.management.exitHardFloorPct}%, sageExit ${ctx.config.management.sageExitEnabled ? "on" : "off"})`,
+    );
+  }
+
   // ── Dashboard bridge (env-gated; the ONLY dashboard touch-point in core) ──
   // Without DASHBOARD_ENABLED=true the bridge module is never even imported, so daemon
   // behavior is byte-for-byte identical. Placed before the autonomous/one-shot split so
@@ -530,7 +564,7 @@ async function main(): Promise<void> {
     const manageMs = ctx.config.schedule.managementIntervalMin * 60_000;
     console.log(`  screening every ${screenMs / 1000}s | management every ${manageMs / 1000}s`);
     scheduler.every(screenMs, () => runScreeningCycle({ ctx, llm, registry, model: modelFor("screening"), ...screeningExtra }).then(() => {}), "screening");
-    scheduler.every(manageMs, () => runManagementCycle({ ctx, registry }).then(() => {}), "management");
+    scheduler.every(manageMs, () => runManagementCycle({ ctx, registry, ...managementExtra }).then(() => {}), "management");
     const pollerHandle = createPnlPoller({
       clock: ctx.clock,
       logger: ctx.logger,

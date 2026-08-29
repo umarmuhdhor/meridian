@@ -47,6 +47,9 @@ export const TrackedPositionSchema = z.object({
   pending_exit_started_at: z.string().nullable().optional(),
   trailing_active: z.boolean().default(false),
   instruction: z.string().nullable().optional(),
+  /** Last time this position was escalated to Sage for an AMBIGUOUS exit verdict.
+   *  Drives the per-position escalation cooldown (management.sageExitCooldownMin). */
+  last_sage_exit_escalation_at: z.string().nullable().optional(),
 });
 export type TrackedPosition = z.infer<typeof TrackedPositionSchema>;
 

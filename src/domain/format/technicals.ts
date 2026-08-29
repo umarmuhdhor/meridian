@@ -130,8 +130,20 @@ export function computeTechnicals(
     nearest_support: null as number | null,
     support_distance_pct: null as number | null,
     support_touches: null as number | null,
+    consecutive_red_count: null as number | null,
   };
   if (candles.length === 0) return base;
+
+  // ── consecutive trailing red candles (close < open), back from the last ──
+  {
+    let red = 0;
+    for (let i = candles.length - 1; i >= 0; i--) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      if (candles[i]!.c < candles[i]!.o) red++;
+      else break;
+    }
+    base.consecutive_red_count = red;
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   const last = candles[candles.length - 1]!;
@@ -238,6 +250,8 @@ export function formatTechnicalsLine(t: TechnicalsSummary): string | null {
   if (t.from_window_high_pct != null) parts.push(`from_high=${fmtPct(t.from_window_high_pct)}`);
   if (t.atr_pct != null) parts.push(`atr=${fmtPct(t.atr_pct)}`);
   if (t.vol_spike != null) parts.push(`vol_x=${t.vol_spike.toFixed(1)}`);
+  if (t.consecutive_red_count != null && t.consecutive_red_count > 0)
+    parts.push(`red_streak=${t.consecutive_red_count}`);
   if (t.nearest_support != null && t.support_distance_pct != null) {
     const touches = t.support_touches != null ? ` touches=${t.support_touches}` : "";
     parts.push(`support=${fmtPrice(t.nearest_support)}(${fmtPct(t.support_distance_pct)})${touches}`);

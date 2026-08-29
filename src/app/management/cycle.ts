@@ -1,20 +1,173 @@
 import type { AppContext } from "../tools/context.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { executeTool, type ToolError } from "../tools/execute.js";
-import { getDeterministicCloseRule } from "../../domain/rules/close-rules.js";
+import {
+  getDeterministicCloseRule,
+  getExitDecision,
+  type ExitRegime,
+} from "../../domain/rules/close-rules.js";
 import type { OnChainPosition } from "../../domain/schemas/chain.js";
+import type { KlineTimeframe, TechnicalsSummary } from "../../domain/schemas/kline.js";
+import { computeTechnicals, formatTechnicalsLine } from "../../domain/format/technicals.js";
+import type { SageExitAdvisor } from "../../ports/sage-exit-advisor.js";
 
-export type PositionAction = "CLOSE" | "CLAIM" | "STAY";
+const EXIT_ADVISOR_PROMPT = [
+  "You are Meridian's DLMM position EXIT advisor. Given ONE open position's live",
+  "signals, decide whether to CLOSE it now or HOLD it. This position was flagged",
+  "AMBIGUOUS by the deterministic engine: it is at/below the stop level but is neither",
+  "clearly collapsing (already cut) nor clearly healthy (already held).",
+  "",
+  "Judgement guide:",
+  "  - CLOSE if structure is breaking: price out of range to the DOWNSIDE, support",
+  "    gone, both timeframes trending DOWN, volume/fees dead, or a long red-candle streak.",
+  "  - HOLD if it is in-range and still earning fees, or oscillating with live volatility",
+  "    that DLMM can farm — paper IL that is likely to mean-revert is not a reason to cut.",
+  "",
+  "Reply with EXACTLY one line: `CLOSE: <short reason>` or `HOLD: <short reason>`.",
+  "No tool calls, no other text.",
+].join("\n");
+
+/** Compact single-position signal block for the exit advisor. */
+function buildExitSignalBlock(plan: PositionPlan, technicals?: readonly TechnicalsSummary[]): string {
+  const p = plan.position;
+  const rangeStr =
+    p.active_bin != null && p.lower_bin != null && p.upper_bin != null
+      ? `active_bin=${p.active_bin} range=[${p.lower_bin},${p.upper_bin}] ${p.active_bin < p.lower_bin ? "(OOR-BELOW)" : p.active_bin > p.upper_bin ? "(OOR-ABOVE)" : "(in-range)"}`
+      : `in_range=${p.in_range ?? "?"}`;
+  const lines = [
+    `POSITION ${p.pair ?? p.position.slice(0, 8)}`,
+    `pnl=${p.pnl_pct?.toFixed(1) ?? "n/a"}%  fee_per_tvl_24h=${p.fee_per_tvl_24h?.toFixed(2) ?? "n/a"}  age=${p.age_minutes ?? "?"}m`,
+    rangeStr,
+    `deterministic_note: ${plan.reason}`,
+  ];
+  const techLines = (technicals ?? [])
+    .map(formatTechnicalsLine)
+    .filter((l): l is string => l != null);
+  if (techLines.length) lines.push("technicals:", ...techLines.map((l) => `  ${l}`));
+  return lines.join("\n");
+}
+
+/**
+ * Resolve an AMBIGUOUS ESCALATE plan into CLOSE or STAY. Cooldown-gated per
+ * position; consults Sage when armed, else applies the conditional deterministic
+ * fallback (in-range → HOLD, OOR/deep → CLOSE). Never throws.
+ */
+async function resolveEscalation(
+  plan: PositionPlan,
+  deps: ManagementCycleDeps,
+  technicals?: readonly TechnicalsSummary[],
+): Promise<{ action: "CLOSE" | "STAY"; reason: string }> {
+  const { ctx } = deps;
+  const mgmt = ctx.config.management;
+  const p = plan.position;
+  const inRange =
+    p.in_range === true ||
+    (p.in_range == null &&
+      p.active_bin != null &&
+      p.lower_bin != null &&
+      p.upper_bin != null &&
+      p.active_bin >= p.lower_bin &&
+      p.active_bin <= p.upper_bin);
+  const fallback = (why: string): { action: "CLOSE" | "STAY"; reason: string } =>
+    inRange
+      ? { action: "STAY", reason: `ambiguous→fallback HOLD (in-range; ${why})` }
+      : { action: "CLOSE", reason: `ambiguous→fallback CLOSE (OOR; ${why})` };
+
+  const tracked = await ctx.repos.positions.get(p.position);
+  const now = ctx.clock.now();
+  const lastEsc = tracked?.last_sage_exit_escalation_at;
+  if (lastEsc) {
+    const mins = (now.getTime() - Date.parse(lastEsc)) / 60_000;
+    if (Number.isFinite(mins) && mins < mgmt.sageExitCooldownMin) {
+      return { action: "STAY", reason: `ambiguous — within Sage cooldown (${mins.toFixed(0)}<${mgmt.sageExitCooldownMin}m), holding` };
+    }
+  }
+
+  if (!mgmt.sageExitEnabled || !deps.sageExit) {
+    return fallback("Sage exit disabled");
+  }
+
+  try {
+    const verdict = await deps.sageExit.advise({
+      systemPrompt: EXIT_ADVISOR_PROMPT,
+      goal: buildExitSignalBlock(plan, technicals),
+      sessionKey: deps.sageSessionKey ?? "meridian-trading",
+      timeoutMs: deps.sageTimeoutMs ?? 30_000,
+    });
+    if (tracked) {
+      await ctx.repos.positions.upsert({ ...tracked, last_sage_exit_escalation_at: now.toISOString() });
+    }
+    ctx.logger.info("management", `sage exit verdict ${verdict.action} ${p.position.slice(0, 8)}…`, {
+      reason: verdict.reason,
+    });
+    return verdict.action === "CLOSE"
+      ? { action: "CLOSE", reason: `Sage: ${verdict.reason}` }
+      : { action: "STAY", reason: `Sage: ${verdict.reason}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (tracked) {
+      await ctx.repos.positions.upsert({ ...tracked, last_sage_exit_escalation_at: now.toISOString() });
+    }
+    ctx.logger.warn("management", `sage exit-advisor failed ${p.position.slice(0, 8)}… — ${msg}`);
+    return fallback(`Sage unreachable: ${msg}`);
+  }
+}
+
+export type PositionAction = "CLOSE" | "CLAIM" | "STAY" | "ESCALATE";
 
 export interface PositionPlan {
   position: OnChainPosition;
   action: PositionAction;
   reason: string;
+  /** Smart-exit regime that produced this plan (for shadow logging + escalation). */
+  regime?: ExitRegime;
 }
 
 export interface ManagementCycleDeps {
   ctx: AppContext;
   registry: ToolRegistry;
+  /** Optional Sage exit advisor for AMBIGUOUS escalation. Absent → conditional fallback only. */
+  sageExit?: SageExitAdvisor;
+  sageSessionKey?: string;
+  sageTimeoutMs?: number;
+}
+
+const MGMT_TIMEFRAMES: readonly KlineTimeframe[] = ["15m", "1h"] as const;
+const MGMT_KLINE_LIMIT = 100;
+const MGMT_KLINE_TIMEOUT_MS = 3_500;
+
+/**
+ * Per-open-position OHLCV → technicals, mirroring screening's enrichTechnicals.
+ * Fail-open: a rate-limit / missing history drops that timeframe's row but never
+ * throws. Keyed by position address. Only called in the management path (10 min),
+ * never the 30s poller.
+ */
+async function enrichPositionTechnicals(
+  positions: readonly OnChainPosition[],
+  ctx: AppContext,
+): Promise<Map<string, TechnicalsSummary[]>> {
+  const timeout = <T,>(p: Promise<T>): Promise<T | null> =>
+    Promise.race([
+      p,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), MGMT_KLINE_TIMEOUT_MS)),
+    ]);
+  const windowShort = ctx.config.screening.technicalsWindowShort;
+  const windowMin = Math.max(3, Math.floor(ctx.config.screening.minTokenAgeHours ?? 3));
+  const out = new Map<string, TechnicalsSummary[]>();
+  await Promise.all(
+    positions.map(async (p) => {
+      const rows = await Promise.all(
+        MGMT_TIMEFRAMES.map(async (tf) => {
+          const candles = await timeout(
+            ctx.market.kline.getKline(p.pool, tf, { limit: MGMT_KLINE_LIMIT }),
+          ).catch(() => null);
+          return computeTechnicals(candles ?? [], tf, { windowShort, windowMin });
+        }),
+      );
+      out.set(p.position, rows);
+    }),
+  );
+  return out;
 }
 
 export interface ExecutedAction {
@@ -37,34 +190,65 @@ export type ManagementOutcome =
 export function planForPosition(
   position: OnChainPosition,
   ctx: Pick<AppContext, "config">,
+  technicals?: readonly TechnicalsSummary[],
 ): PositionPlan {
-  const close = getDeterministicCloseRule(
-    {
-      position: position.position,
-      pnl_pct: position.pnl_pct,
-      pnl_pct_suspicious: position.pnl_pct_suspicious,
-      total_value_usd: position.total_value_usd ?? null,
-      in_range: position.in_range,
-      active_bin: position.active_bin,
-      upper_bin: position.upper_bin,
-      lower_bin: position.lower_bin,
-      minutes_out_of_range: position.minutes_out_of_range ?? 0,
-      fee_per_tvl_24h: position.fee_per_tvl_24h ?? null,
-      age_minutes: position.age_minutes ?? 0,
-    },
-    ctx.config.management,
-  );
-  if (close) {
-    return { position, action: "CLOSE", reason: close.reason };
+  const mgmt = ctx.config.management;
+  const live = {
+    position: position.position,
+    pnl_pct: position.pnl_pct,
+    pnl_pct_suspicious: position.pnl_pct_suspicious,
+    total_value_usd: position.total_value_usd ?? null,
+    in_range: position.in_range,
+    active_bin: position.active_bin,
+    upper_bin: position.upper_bin,
+    lower_bin: position.lower_bin,
+    minutes_out_of_range: position.minutes_out_of_range ?? 0,
+    fee_per_tvl_24h: position.fee_per_tvl_24h ?? null,
+    age_minutes: position.age_minutes ?? 0,
+  };
+
+  if (mgmt.smartExitEnabled) {
+    // Take-profit / OOR-pump / low-yield still deterministic; the regime engine
+    // owns the downside stop dimension (rule 1 suppressed).
+    const nonStop = getDeterministicCloseRule(live, mgmt, {}, { skipStopLoss: true });
+    if (nonStop) {
+      return { position, action: "CLOSE", reason: nonStop.reason, regime: "OK" };
+    }
+    const ex = getExitDecision({ ...live, technicals }, mgmt);
+    if (ex.action === "CLOSE") {
+      return { position, action: "CLOSE", reason: ex.reason, regime: ex.regime };
+    }
+    if (ex.action === "ESCALATE") {
+      return { position, action: "ESCALATE", reason: ex.reason, regime: ex.regime };
+    }
+    // HOLD → fall through to claim/stay, carrying the regime for the shadow log.
+    if (position.unclaimed_fees_usd >= mgmt.minClaimAmount) {
+      return {
+        position,
+        action: "CLAIM",
+        reason: `unclaimed_fees_usd ${position.unclaimed_fees_usd.toFixed(2)} ≥ ${mgmt.minClaimAmount}`,
+        regime: ex.regime,
+      };
+    }
+    return { position, action: "STAY", reason: ex.reason, regime: ex.regime };
   }
-  if (position.unclaimed_fees_usd >= ctx.config.management.minClaimAmount) {
+
+  // Legacy path (smartExitEnabled=false): static rule-1 stop drives closes.
+  // The regime is still classified (shadow) purely for the observability log.
+  const shadow = getExitDecision({ ...live, technicals }, mgmt);
+  const close = getDeterministicCloseRule(live, mgmt);
+  if (close) {
+    return { position, action: "CLOSE", reason: close.reason, regime: shadow.regime };
+  }
+  if (position.unclaimed_fees_usd >= mgmt.minClaimAmount) {
     return {
       position,
       action: "CLAIM",
-      reason: `unclaimed_fees_usd ${position.unclaimed_fees_usd.toFixed(2)} ≥ ${ctx.config.management.minClaimAmount}`,
+      reason: `unclaimed_fees_usd ${position.unclaimed_fees_usd.toFixed(2)} ≥ ${mgmt.minClaimAmount}`,
+      regime: shadow.regime,
     };
   }
-  return { position, action: "STAY", reason: "all rules pass" };
+  return { position, action: "STAY", reason: "all rules pass", regime: shadow.regime };
 }
 
 /**
@@ -186,8 +370,34 @@ export async function runManagementCycle(deps: ManagementCycleDeps): Promise<Man
     }),
   );
 
-  const plans = oorEnrichedSnapshot.map((p) => planForPosition(p, ctx));
-  const actionsList = plans.filter((p) => p.action !== "STAY");
+  // Fetch OHLCV → technicals per open position (10-min path only; fail-open).
+  const techByPos = await enrichPositionTechnicals(oorEnrichedSnapshot, ctx);
+
+  const plans = oorEnrichedSnapshot.map((p) =>
+    planForPosition(p, ctx, techByPos.get(p.position)),
+  );
+
+  // Shadow observability: log the classified regime for EVERY position each tick,
+  // whether or not smartExitEnabled acts on it. Lets the operator watch the engine
+  // during the dark-launch period before arming.
+  for (const plan of plans) {
+    ctx.logger.info(
+      "management",
+      `regime ${plan.regime ?? "n/a"} ${plan.position.position.slice(0, 8)}… → ${plan.action} (pnl ${plan.position.pnl_pct?.toFixed(1) ?? "n/a"}%)`,
+      { reason: plan.reason },
+    );
+  }
+
+  // Resolve AMBIGUOUS escalations (smart mode only) into CLOSE or STAY before
+  // execution. Cooldown-gated per position; Sage advises, we execute.
+  for (const plan of plans) {
+    if (plan.action !== "ESCALATE") continue;
+    const resolved = await resolveEscalation(plan, deps, techByPos.get(plan.position.position));
+    plan.action = resolved.action;
+    plan.reason = resolved.reason;
+  }
+
+  const actionsList = plans.filter((p) => p.action === "CLOSE" || p.action === "CLAIM");
   if (actionsList.length === 0) {
     ctx.logger.info("management", `all ${plans.length} positions STAY`);
     return { kind: "all_stay", positions: plans.length };
