@@ -125,3 +125,27 @@ describe("computeTechnicals — consecutive_red_count", () => {
     expect(computeTechnicals(candles, "15m").consecutive_red_count).toBe(3);
   });
 });
+
+describe("TechnicalsSummarySchema — backward compatibility", () => {
+  it("parses a record persisted BEFORE consecutive_red_count existed (defaults to null)", async () => {
+    const { TechnicalsSummarySchema } = await import("../../src/domain/schemas/kline.js");
+    const legacy = {
+      timeframe: "1h",
+      candles: 100,
+      last_close: 1,
+      spike_pct: null,
+      at_local_top: null,
+      at_local_bottom: null,
+      atr_pct: 20,
+      vol_spike: null,
+      trend: "UP",
+      from_window_high_pct: -30,
+      nearest_support: null,
+      support_distance_pct: null,
+      support_touches: null,
+      // no consecutive_red_count — old on-disk shape
+    };
+    const parsed = TechnicalsSummarySchema.parse(legacy);
+    expect(parsed.consecutive_red_count).toBeNull();
+  });
+});

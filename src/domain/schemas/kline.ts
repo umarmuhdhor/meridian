@@ -44,7 +44,9 @@ export const TechnicalsSummarySchema = z.object({
   support_distance_pct: z.number().nullable(),
   /** How many prior swing lows sit within `touchTolPct` of nearest_support (≥2 = tested). */
   support_touches: z.number().int().nonnegative().nullable(),
-  /** Count of TRAILING red candles (close < open), counting back from the last candle. 0 = last candle green. */
-  consecutive_red_count: z.number().int().nonnegative().nullable(),
+  /** Count of TRAILING red candles (close < open), counting back from the last candle. 0 = last candle green.
+   *  `.default(null)` so TechnicalsSummary records persisted BEFORE this field existed
+   *  (entry_technicals in state.json / lessons.json) still validate on load. */
+  consecutive_red_count: z.number().int().nonnegative().nullable().default(null),
 }).passthrough();
 export type TechnicalsSummary = z.infer<typeof TechnicalsSummarySchema>;
