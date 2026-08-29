@@ -81,7 +81,11 @@ export const updateConfigTool = defineTool({
       };
     }
 
-    await writeJsonAtomic(ctx.configPath, validated.data);
+    // inPlace: user-config.json is a single-file Docker bind mount. A temp+rename
+    // write silently detaches it from the host file (new overlay inode), so the
+    // durable file never updates and every restart reverts the change. Overwrite
+    // the existing inode instead. See writeJsonAtomic / WriteJsonOptions.
+    await writeJsonAtomic(ctx.configPath, validated.data, { inPlace: true });
 
     // Live-reload: mutate each config section in place so the running daemon picks it up.
     // Prefer in-place assign (preserves refs held by cycle closures); fall back to set if a

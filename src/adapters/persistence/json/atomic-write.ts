@@ -9,21 +9,39 @@ export type LoadError =
   | { kind: "parse_failed"; path: string; message: string }
   | { kind: "validation_failed"; path: string; issues: z.ZodIssue[] };
 
+export interface WriteJsonOptions {
+  /**
+   * Preserve the target's inode by overwriting IN PLACE instead of temp+rename.
+   * REQUIRED for a **single-file Docker bind mount** (e.g. `user-config.json`).
+   *
+   * Why: `rename(tmp, target)` over a single-file bind mount does NOT reliably
+   * fail with EBUSY — on overlayfs it SUCCEEDS by creating a NEW inode in the
+   * container's upper layer, silently detaching the path from the host file. The
+   * daemon's in-memory reload then works, but the durable host file is never
+   * updated, so every restart reverts the change (and any other container reading
+   * the same host mount, e.g. `meridian-web`, sees the stale value). Overwriting
+   * the existing inode (open O_TRUNC via copyFile) keeps the bind mount intact.
+   * Slightly less crash-safe than rename; fine for the small, infrequent config
+   * write with a single writer. Directory-mounted state files keep temp+rename.
+   */
+  inPlace?: boolean;
+}
+
 /**
  * Atomic JSON write — write to sibling temp file, fsync, rename over target.
  * `rename` is atomic on POSIX for same-filesystem paths, so a crash never leaves
  * a half-written file at the destination.
  *
- * Fallback: `rename` over a **single-file Docker bind mount** fails with `EBUSY`
- * (the mount pins the target inode), and a temp on a different filesystem fails
- * with `EXDEV`. In both cases we overwrite the target in place (same inode) and
- * remove the temp. This is slightly less crash-safe than rename but is the only
- * way to persist a bind-mounted config file — without it the dashboard's
- * `update_config` throws `EBUSY` on every save.
+ * With `{ inPlace: true }` the target inode is overwritten directly (temp is
+ * written+fsynced first, then copied over the existing inode) — see WriteJsonOptions.
+ *
+ * The legacy EBUSY/EXDEV fallback also overwrites in place, for the case where
+ * rename DOES throw (some kernels/mount setups).
  */
 export async function writeJsonAtomic(
   filePath: string,
   data: unknown,
+  opts: WriteJsonOptions = {},
 ): Promise<void> {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
@@ -37,20 +55,35 @@ export async function writeJsonAtomic(
   } finally {
     await fh.close();
   }
+
+  const overwriteInPlace = async (): Promise<void> => {
+    // copyFile truncates the destination and writes into the SAME inode, so a
+    // single-file bind mount stays connected to its host file.
+    await fs.copyFile(tmp, filePath);
+    await fs.rm(tmp, { force: true });
+  };
+
+  if (opts.inPlace) {
+    // If the target does not exist yet (first write), a plain rename is correct
+    // and creates it; only overwrite-in-place once it exists (and is possibly mounted).
+    try {
+      await fs.access(filePath);
+    } catch {
+      await fs.rename(tmp, filePath).catch(async () => {
+        await overwriteInPlace();
+      });
+      return;
+    }
+    await overwriteInPlace();
+    return;
+  }
+
   try {
     await fs.rename(tmp, filePath);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code !== "EBUSY" && code !== "EXDEV") throw e;
-    // In-place overwrite: target inode is preserved (bind mount stays valid).
-    const th = await fs.open(filePath, "w");
-    try {
-      await th.writeFile(payload, "utf8");
-      await th.sync();
-    } finally {
-      await th.close();
-    }
-    await fs.rm(tmp, { force: true });
+    await overwriteInPlace();
   }
 }
 
