@@ -91,6 +91,13 @@ log "deploy sha=$SHA scope=$SCOPE dry_run=$DRY_RUN"
 run "$DC tag ${REG}:dashboard ${REG}:previous 2>/dev/null || true"
 
 log "pulling ${REG}:${SHA}"
+# Self-heal the GHCR stale-cred trap: the package is PUBLIC, but if the box has a
+# stale/expired ghcr.io login in ~/.docker/config.json, docker sends the bad token
+# and the registry answers "denied" instead of anon-pulling — failing every deploy
+# until someone runs `docker logout` by hand (happened 2026-08-29 + 08-31). Some
+# other service on the box periodically re-adds the login, so we clear it right
+# before each pull. Harmless when no cred exists.
+run "$DC logout ghcr.io >/dev/null 2>&1 || true"
 run "$DC pull ${REG}:${SHA}"
 run "$DC tag ${REG}:${SHA} ${REG}:dashboard"
 
