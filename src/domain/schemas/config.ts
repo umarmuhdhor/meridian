@@ -86,6 +86,7 @@ export const ScreeningConfigSchema = z.object({
   capitulationSupportDistPct: z.number().min(0),
   capitulationAtrPct: z.number().min(0),
   maxFromHighPct: z.number().min(0),
+  rejectNoFloorDowntrend: z.boolean(),
   technicalsWindowShort: z.number().int().min(3),
   allowedLaunchpads: z.array(z.string()),
   blockedLaunchpads: z.array(z.string()),

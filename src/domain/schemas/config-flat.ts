@@ -115,6 +115,14 @@ export const FlatUserConfigSchema = z
     // (entries at -50/-41/-33% from high on a 1h dead-cat bounce) all stop-lossed:
     // the capitulation gate never fired because it was gated behind trend===DOWN.
     maxFromHighPct: z.number().min(0).default(35),
+    // No-floor downtrend veto — reject when EVERY present timeframe trends DOWN AND
+    // no swing-low support exists on ANY candle-bearing timeframe (nearest_support null
+    // everywhere = a falling knife with nothing under it). Added 2026-08-31 after QENIS
+    // -17%: both TFs DOWN, support null on 15m+1h, 8-candle red streak — Sage
+    // rationalized it as a "bin-sweep reversal" and knife-caught it. from_high was only
+    // -22% so the drawdown gate (< -35) couldn't catch it. A downtrend with no floor is
+    // not a bin-sweep. Code-enforced so Sage cannot override it with a thesis.
+    rejectNoFloorDowntrend: z.boolean().default(true),
     // Technicals lookback (candles per timeframe). Controls spike_pct, at_local_top/bottom,
     // from_window_high_pct, vol_spike. Adaptive: for tokens younger than windowShort candles,
     // shrinks to min(windowShort, candles.length). Floor = `minTokenAgeHours` (or 3 if null).

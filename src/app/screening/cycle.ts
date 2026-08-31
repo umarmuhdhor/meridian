@@ -444,20 +444,23 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
   // resolved in time; missing timeframes just render fewer lines.
   let technicals = await enrichTechnicals(pickedFiltered, ctx);
 
-  // TA hard gate — five failure modes, ALL fail-closed:
-  //   1. missing_trend  → every timeframe returned null (too new / wild candles)
-  //   2. drawdown       → worst from_window_high_pct < -maxFromHighPct on ANY tf,
-  //                       TREND-INDEPENDENT (a bounce reading trend=UP is NOT a recovery)
-  //   3. capitulation   → every non-null trend DOWN AND deep + no-support + dead-vol
-  //   4. atr_extreme    → any timeframe atr_pct > maxAtrPct (deploying into insane vol)
-  //   5. spike_top      → any timeframe spike_pct > maxSpikePct AND at_local_top
-  //                       (buying the exact top of a pump)
+  // TA hard gate — six failure modes, ALL fail-closed:
+  //   1. missing_trend      → every timeframe returned null (too new / wild candles)
+  //   2. drawdown           → worst from_window_high_pct < -maxFromHighPct on ANY tf,
+  //                           TREND-INDEPENDENT (a bounce reading trend=UP is NOT a recovery)
+  //   3. capitulation       → every non-null trend DOWN AND deep + no-support + dead-vol
+  //   4. no_floor_downtrend → every non-null trend DOWN AND nearest_support null on every
+  //                           candle-bearing tf (falling knife, no floor — QENIS 2026-08-31)
+  //   5. atr_extreme        → any timeframe atr_pct > maxAtrPct (deploying into insane vol)
+  //   6. spike_top          → any timeframe spike_pct > maxSpikePct AND at_local_top
+  //                           (buying the exact top of a pump)
   // 2026-08-11: daemon redeployed a -8.29% loser 1h after close (fixed by cooldown +
   // downtrend gate). 2026-08-13: K-HOME (280x pump, 43% ATR, +57% spike, all trends
   // null) sailed through the downtrend-only gate's fail-open path. This is the fix.
   const maxAtr = ctx.config.screening.maxAtrPct;
   const maxSpike = ctx.config.screening.maxSpikePct;
   const maxFromHigh = ctx.config.screening.maxFromHighPct;
+  const rejectNoFloor = ctx.config.screening.rejectNoFloorDowntrend;
   const rejectMissingTrend = ctx.config.screening.rejectOnMissingTrend;
   const capFromHigh = ctx.config.screening.capitulationFromHighPct;
   const capSupportDist = ctx.config.screening.capitulationSupportDistPct;
@@ -511,6 +514,26 @@ export async function runScreeningCycle(deps: ScreeningCycleDeps): Promise<Scree
           detail: `1h from_high=${fromHigh!.toFixed(1)}% support_dist=${supportDist!.toFixed(1)}% atr=${atr!.toFixed(1)}%`,
         });
         continue;
+      }
+      // No-floor downtrend veto — both TFs DOWN AND no swing-low support on ANY
+      // candle-bearing timeframe (nearest_support null everywhere = falling knife,
+      // nothing under it). QENIS -17% (2026-08-31): both TFs DOWN, support null on
+      // 15m+1h, 8-candle red streak; Sage called it a "bin-sweep reversal" and
+      // knife-caught it. from_high was only -22% so the drawdown gate (< -35) couldn't
+      // catch it. A downtrend with no floor is not a bin-sweep. Code-enforced so Sage
+      // can't override it with a thesis. Requires ALL candle rows to lack support (both
+      // TFs blind) — a floor on the short TF keeps the candidate.
+      if (rejectNoFloor) {
+        const candleRows = rows.filter((r) => r.candles > 0);
+        const noFloor = candleRows.length > 0 && candleRows.every((r) => r.nearest_support == null);
+        if (noFloor) {
+          taRejected.push({
+            name,
+            kind: "no_floor_downtrend",
+            detail: `both TFs DOWN + no support on any TF (${candleRows.map((r) => r.timeframe).join("/")})`,
+          });
+          continue;
+        }
       }
     }
     const badAtr = rows.find((r) => r.atr_pct != null && r.atr_pct > maxAtr);

@@ -115,6 +115,31 @@ describe("runScreeningCycle", () => {
     expect(ds[0]?.type).toBe("no_deploy");
   });
 
+  it("rejects a both-TF-DOWN candidate with no support floor (no_floor_downtrend gate)", async () => {
+    // QENIS repro: both timeframes trending DOWN, no swing-low support (monotonic
+    // decline → current close is the lowest → nearest_support null), but shallow
+    // from_high so the drawdown gate does NOT fire — the no-floor gate must catch it.
+    // 60 candles 100→82: enough for EMA50 (trend=DOWN), monotonic (no swing low).
+    const decline: KlineCandle[] = Array.from({ length: 60 }, (_, i) => {
+      const c = 100 - i * ((100 - 82) / 59);
+      return { t: 1_700_000_000 + i * 3600, o: c, h: c * 1.003, l: c * 0.997, c, v: 1000 };
+    });
+    const pools = createFakePoolDiscovery({
+      seed: [pool({ pool_address: "knifePool", name: "KNIFE/SOL", base_mint: "MINT_K" })],
+    });
+    const kline = createFakeKlineClient();
+    kline.set("knifePool", "15m", decline);
+    kline.set("knifePool", "1h", decline);
+    const chain = createDryRunChainClient({ clock: CLOCK, seed: { walletSol: 5 } });
+    const ctx = makeCtx({ chain, market: { pools, kline } });
+    const llm = createFakeLLM({ script: [] });
+    const outcome = await runScreeningCycle({ ctx, llm, registry: REGISTRY, model: "test" });
+    expect(outcome.kind).toBe("no_deploy");
+    if (outcome.kind === "no_deploy") {
+      expect(outcome.rejection_summary).toContain("ta_no_floor_downtrend");
+    }
+  });
+
   it("rejects a candidate deep below its window high regardless of trend (drawdown gate)", async () => {
     // Zoe/GTA6/Morty repro: token -50% from window high, bought on a bounce.
     // Trend is null here (only 20 candles), proving the gate does NOT depend on

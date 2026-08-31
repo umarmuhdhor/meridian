@@ -64,6 +64,7 @@ export const screening: ScreeningConfig = {
   capitulationSupportDistPct: 15,
   capitulationAtrPct: 15,
   maxFromHighPct: 35,
+  rejectNoFloorDowntrend: true,
   technicalsWindowShort: 20,
   allowedLaunchpads: [],
   blockedLaunchpads: [],

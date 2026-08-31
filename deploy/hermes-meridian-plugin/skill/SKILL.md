@@ -80,6 +80,8 @@ Decision logic:
 3. Apply the **entry-quality veto** below. Better to `NO DEPLOY` a bad entry than eat another stop-loss.
 4. Pick a **strategy per candidate** from its technicals + conditions — do NOT copy the config `strategy` default (it's a fallback, not an instruction).
 5. Consult your memory (session key `meridian-trading`) + the `── LESSONS ──` block in the system prompt: patterns of past wins/losses on similar pools, tokens, launchpads, times of day. If you closed a similar pool for stop-loss recently, prefer a different candidate this cycle even if it ranks lower.
+
+**PITFALL — "prior profitable closes" is a trap, not a signal.** Do NOT deploy (or override a veto) because a pool has "N prior closes avg +X%". Past wins were *timed* entries on a token whose regime has since flipped. Same-pool history justified Morty 6 redeploys and GTA6 9 in one week — three straight stop-losses followed (Zoe −50%, GTA6 −41%, Morty −34% from high). When the current chart says deep-from-high or dead-vol, the résumé is worthless. Read the current technicals, not the pool's history.
 6. Call `mrd_deploy_position` EXACTLY ONCE with the fixed params (`amount_sol`, `bins_below`, `bins_above`, `cycle_id`) + your chosen `pool_address` + your chosen `strategy` (spot | curve | bid_ask) + **`rationale`** (2-3 sentences: which candidate & why, which strategy & why, which veto/lesson honored or overridden — this becomes the decision-log `reason` verbatim and tags the entry `actor=SAGE`; skipping it drops you back to the generic spot template and to `actor=GENERAL`, hiding your call from the audit trail). **You MUST also forward every enrichment field from the chosen candidate's line — they are REQUIRED by the tool schema and the call will fail if any is missing**: `pool_name`, `bin_step`, `mcap`, `holders` (the TOTAL from the pool line, not `top10`/`bots`), `organic_score`, `fee_tvl_ratio` (the raw ratio value shown in parentheses, e.g. `fee/aTVL=1.20% (fee_tvl_ratio=0.0120)` → pass `0.0120`), `volatility`, `smart_wallets_present`. The candidate block prints every one of these verbatim next to the pool — copy them exactly, do not omit, do not "clean up", do not paraphrase. If a field truly is absent from the block (rare — only when the pool source returned no value), pass `0` for numbers and `false` for `smart_wallets_present` rather than dropping the key. Skipping any of these leaves the tracked position with nulls, and the dashboard renders `-` for Mcap in / Holders at entry / Fee/TVL / Bin step / Mcap range — that is a REGRESSION, not an acceptable outcome.
 
 ### Entry-quality veto — hard rule
@@ -99,6 +101,9 @@ Decision logic:
 **Extreme volatility condition (LOUIE confirmation — 1h ATR 39.8%, 461% pump→crash):**
 - `atr_pct > 25%` on 1h OR `atr_pct > 10%` on 5m — price swings are so wide that all 69 bins get traversed in minutes. Entry at any point in the range is a gamble, not a position.
 
+**Dead-volume / fee-dry-up condition (TOAD −$9.57, Qenis −$10.56, 2026-08-29/31):**
+- Low ATR does NOT mean safe. `atr_pct < 15%` on 1h paired with thin/falling fee velocity = a low-liquidity meme that is *dying quietly*, not trading calmly. It passes the volatility veto, then both TFs drift DOWN, volume dries up, fees stop, and the position bleeds to a stop or an exit-advisor cut. Distinguish "calm sideways" (farmable → curve) from "dead" (no volume → decline) by fee/TVL + volume trend; if both are thin, decline even though the volatility veto passes.
+
 If NO candidate survives the veto → `NO DEPLOY: all N shortlisted are at spike top / in downtrend / extreme vol (list the flags)`. This is defensible; deploying into a bad entry is not.
 
 **NEW (2026-08-29) — the code now pre-vetoes deep drawdown, TREND-INDEPENDENT.**
@@ -112,6 +117,20 @@ all three stop-lossed. **A dead-cat bounce is NOT a recovery.** So: if you ever 
 candidate at `from_high=-40%` with `trend=UP`, that is a bounce mid-collapse — do NOT
 read the green candles as an uptrend, do NOT deploy. The code should drop these before
 you see them; if one slips through with `from_high < -30%`, decline it regardless of trend.
+
+**NEW (2026-08-31) — the code now hard-vetoes a downtrend with NO FLOOR.**
+Meridian's TA gate rejects any candidate where EVERY timeframe trends `DOWN` AND
+`nearest_support` is null on every timeframe (no swing-low support anywhere — a falling
+knife with nothing under it), config `rejectNoFloorDowntrend` (default on). Why: **Qenis
+−17%** — you deployed it with the rationale *"both timeframes DOWN but sitting at local
+bottom (vol_x 4.7 = live volume) is a two-sided bin-sweep setup."* It was not a bin-sweep;
+it had no support and kept collapsing (from_high −22% → −57%). `from_high −22%` was too
+shallow for the drawdown gate to catch, so this gate closes that hole. **Rule for you: a
+downtrend with no swing-low support below it is a KNIFE, not a bin-sweep — do not
+rationalize live volume into a reversal thesis.** A real bin-sweep / reversal needs a
+TESTED support nearby (`support_distance_pct` small, `support_touches ≥ 2`); "at local
+bottom" with `nearest_support = null` is the opposite of that. The code drops these before
+you see them; if one appears, decline it.
 
 **Mcap is NOT a veto signal.** An earlier analysis incorrectly concluded that low mcap (<$2.5M) caused stop losses. The real cause was entry timing — spike tops and downtrends. TOAD ($11-15M mcap) won because it was chopping sideways at entry, not because it was bigger. Low mcap correlates with losses only because small tokens spike harder; the veto should be on the spike, not the mcap.
 
@@ -231,6 +250,8 @@ The retrospective protocol — analyze first, propose the lesson, only save on c
 Never save more than one lesson per retrospective. Never save a lesson the user didn't approve. Never save a lesson inside a screening cycle.
 
 **Reference:** `references/stop-loss-postmortem-aug-2026.md` — full kline-confirmed analysis of 6 SLs (Aug 5-9), two failure modes (spike-top entry vs sustained downtrend), the mcap red herring, and what worked for contrast.
+
+**Reference:** `references/loss-mode-analysis-and-aggregation-2026-08.md` — three loss modes (null-technicals, dead-cat bounce, dead-volume/fee-dry-up), the raw `/state/file/lessons` full-history aggregation recipe, and the "prior profitable closes is a trap" pitfall.
 
 ---
 
